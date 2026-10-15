@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#030605">
+  <meta name="description" content="Point Blank: a student-run open source community from India. A live 3D scene rendered with Cloud Kit.">
+  <title>Point Blank — Student Community of the Year</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Lexend:wght@300;400;500;600;700&family=Oswald:wght@500;600;700&family=JetBrains+Mono:wght@400&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="style.css?v=devices1">
+</head>
+<body>
+  <a class="skip-link" href="#main">Skip to content</a>
+  <main id="main" class="hero" aria-labelledby="heroTitle">
+    <div class="stage" id="stage" aria-hidden="true">
+      <img class="plate" id="plate" src="assets/plate/plate.webp" alt="" draggable="false" decoding="async">
+      <img class="back-rocks" id="backRidge" src="assets/plate/back-1.webp" alt="" draggable="false" decoding="async">
+      <img class="back-rocks" id="backColumns" src="assets/plate/back-2.webp" alt="" draggable="false" decoding="async">
+      <canvas id="mistBack"></canvas>
+      <img class="award-img" id="awardImg" src="assets/plate/award.webp" alt="" draggable="false" decoding="async">
+      <canvas id="world"></canvas>
+      <img class="cliff" id="cliff" src="assets/plate/cliff.webp" alt="" draggable="false" decoding="async">
+      <canvas class="crack-glow" id="crackGlow"></canvas>
+      <canvas id="mistFront"></canvas>
+      <div class="grain"></div>
+    </div>
+
+    <header class="navigation">
+      <a class="brand" href="#main"><span class="accent">&lt;.&gt; Point</span> Blank</a>
+      <button class="menu" id="menu" type="button" aria-expanded="false" aria-controls="links">Menu</button>
+      <nav id="links" aria-label="Main navigation">
+        <a class="active" href="#main" aria-current="page">Home</a>
+        <a href="#">Events</a><a href="#">OSS</a><a href="#">Members</a><a href="#">Achievements</a>
+        <a href="#">Placements</a><a href="#">Lore</a><a href="#">Talks</a><a href="#">Hustle Results</a><a href="#">GitHub</a>
+      </nav>
+    </header>
+
+    <section class="copy">
+      <h1 id="heroTitle"><span class="line"><span class="metal">We Are</span> <span class="accent">&lt;. &gt;</span></span><span class="line"><span class="accent">Point</span> <span class="metal">Blank</span></span></h1>
+      <p class="tagline">Student run Open Source Community from India</p>
+      <div class="award">
+        <svg class="laurel" viewBox="-6 -8 50 90" aria-hidden="true"><use href="#laurelPath"/></svg>
+        <div>
+          <p class="award-kicker">FOSS AWARDS 2026</p>
+          <p class="award-title">Student Community of the Year</p>
+          <p class="award-logos"><span class="logo india">INDIA FOSS</span><i aria-hidden="true"></i><span class="logo foss">FOSS<br>UNITED</span></p>
+        </div>
+        <svg class="laurel mirror" viewBox="-6 -8 50 90" aria-hidden="true"><use href="#laurelPath"/></svg>
+      </div>
+      <div class="actions">
+        <a class="button primary" href="#">Join the Community <span aria-hidden="true">→</span></a>
+        <a class="button secondary" href="#">Explore Events</a>
+      </div>
+    </section>
+
+    <ul class="stats" aria-label="Community in numbers">
+      <li><svg viewBox="0 0 32 32" aria-hidden="true"><circle cx="16" cy="9" r="4.5"/><circle cx="7" cy="12" r="3.3"/><circle cx="25" cy="12" r="3.3"/><path d="M8 27v-3a8 8 0 0 1 16 0v3zM2 26v-2a5 5 0 0 1 6.5-4.8M30 26v-2a5 5 0 0 0-6.5-4.8"/></svg><p><b>1000+</b><span>Members</span></p></li>
+      <li><svg viewBox="0 0 32 32" aria-hidden="true"><path d="M10 8 3 16l7 8M22 8l7 8-7 8M19 5l-6 22"/></svg><p><b>50+</b><span>Open Source Projects</span></p></li>
+      <li><svg viewBox="0 0 32 32" aria-hidden="true"><path d="M10 4h12v8a6 6 0 0 1-12 0zM10 7H5v2a5 5 0 0 0 5 5M22 7h5v2a5 5 0 0 1-5 5M16 18v5M11 28h10M12 28l1-5h6l1 5"/></svg><p><b>10+</b><span>Events &amp; Hackathons</span></p></li>
+    </ul>
+
+    <details class="scene-panel" id="scenePanel">
+      <summary><span class="dot" aria-hidden="true"></span><span>Scene &amp; device preview</span><span class="device-badge" id="deviceBadge">Auto</span><span class="panel-chevron" aria-hidden="true">⌃</span></summary>
+      <div class="panel-body">
+        <div class="device-preview">
+          <label for="renderMode">Device category</label>
+          <select id="renderMode" aria-describedby="deviceDescription devicePreviewNote"><option value="auto" selected>Auto — this device</option><option value="static">No GPU — static artwork</option><option value="low">Low-spec phone / laptop</option><option value="balanced">Integrated GPU / everyday</option><option value="high">High-end GPU / full effects</option></select>
+          <p id="deviceDescription" class="device-description" role="status">Checking this device…</p>
+          <p id="devicePreviewNote" class="preview-note">Compare visual presets on this screen. This does not emulate another device's speed or screen size. Changing category reloads the scene.</p>
+        </div>
+        <div class="swatches" role="group" aria-label="Accent light"><button type="button" data-accent="#3dff3a" aria-pressed="true" style="--c:#3dff3a">Emerald</button><button type="button" data-accent="#4fc8ff" aria-pressed="false" style="--c:#4fc8ff">Ice</button><button type="button" data-accent="#ff8a3d" aria-pressed="false" style="--c:#ff8a3d">Ember</button></div>
+        <label>Mist <input id="mistDensity" type="range" min="0" max="1.6" step="0.05" value="1.3"></label>
+        <label>Quality <select id="quality"><option value="low">Low</option><option value="medium" selected>Medium</option><option value="high">High</option></select></label>
+        <div class="panel-actions"><button type="button" id="pulse">Pulse ϟ</button><button type="button" id="pause" aria-pressed="false">Pause</button></div>
+        <p id="sceneStatus" class="scene-status" role="status">Rendering 3D scene…</p>
+      </div>
+    </details>
+  </main>
+
+  <svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs><g id="laurelPath"><path class="stem" d="M30 78C12 62 7 36 22 6"/><path d="M0 0C3.0 -3.2 9.0 -3.4 13.0 0C9.0 3.4 3.0 3.2 0 0Z" transform="translate(25.9 74.0) rotate(-174)"/><path d="M0 0C3.0 -3.2 9.0 -3.4 13.0 0C9.0 3.4 3.0 3.2 0 0Z" transform="translate(25.9 74.0) rotate(-90)"/><path d="M0 0C2.9 -3.1 8.6 -3.2 12.4 0C8.6 3.2 2.9 3.1 0 0Z" transform="translate(21.0 67.5) rotate(-164)"/><path d="M0 0C2.9 -3.1 8.6 -3.2 12.4 0C8.6 3.2 2.9 3.1 0 0Z" transform="translate(21.0 67.5) rotate(-80)"/><path d="M0 0C2.7 -2.9 8.2 -3.1 11.8 0C8.2 3.1 2.7 2.9 0 0Z" transform="translate(17.2 60.4) rotate(-155)"/><path d="M0 0C2.7 -2.9 8.2 -3.1 11.8 0C8.2 3.1 2.7 2.9 0 0Z" transform="translate(17.2 60.4) rotate(-71)"/><path d="M0 0C2.6 -2.8 7.8 -2.9 11.2 0C7.8 2.9 2.6 2.8 0 0Z" transform="translate(14.6 52.6) rotate(-145)"/><path d="M0 0C2.6 -2.8 7.8 -2.9 11.2 0C7.8 2.9 2.6 2.8 0 0Z" transform="translate(14.6 52.6) rotate(-61)"/><path d="M0 0C2.5 -2.6 7.4 -2.8 10.7 0C7.4 2.8 2.5 2.6 0 0Z" transform="translate(13.3 44.3) rotate(-136)"/><path d="M0 0C2.5 -2.6 7.4 -2.8 10.7 0C7.4 2.8 2.5 2.6 0 0Z" transform="translate(13.3 44.3) rotate(-52)"/><path d="M0 0C2.3 -2.5 7.0 -2.6 10.1 0C7.0 2.6 2.3 2.5 0 0Z" transform="translate(13.3 35.4) rotate(-127)"/><path d="M0 0C2.3 -2.5 7.0 -2.6 10.1 0C7.0 2.6 2.3 2.5 0 0Z" transform="translate(13.3 35.4) rotate(-43)"/><path d="M0 0C2.2 -2.3 6.6 -2.5 9.5 0C6.6 2.5 2.2 2.3 0 0Z" transform="translate(14.7 26.0) rotate(-119)"/><path d="M0 0C2.2 -2.3 6.6 -2.5 9.5 0C6.6 2.5 2.2 2.3 0 0Z" transform="translate(14.7 26.0) rotate(-35)"/><path d="M0 0C2.1 -2.2 6.2 -2.3 8.9 0C6.2 2.3 2.1 2.2 0 0Z" transform="translate(17.6 16.2) rotate(-112)"/><path d="M0 0C2.1 -2.2 6.2 -2.3 8.9 0C6.2 2.3 2.1 2.2 0 0Z" transform="translate(17.6 16.2) rotate(-28)"/><path d="M0 0C3-3 9-3 12 0C9 3 3 3 0 0Z" transform="translate(22 6) rotate(-75)"/></g></defs></svg>
+
+  <script src="../dist/cloud-kit.js?v=0.3.2"></script>
+  <script src="../demo-performance.js?v=1"></script>
+  <script src="assets/trophy/trophy.js"></script>
+  <script src="world.js?v=perf1"></script>
+  <script src="mist.js"></script>
+  <script src="demo.js?v=devices1"></script>
+</body>
+</html>

@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="description" content="An interactive Cloud Kit feature gallery: atmospheres, custom shapes, cloud text, light, lightning, and weather."><title>Cloud Kit — feature gallery</title><link rel="stylesheet" href="style.css"></head>
+<body>
+<header><a class="brand" href="#">CLOUD KIT <span>by Yash Suthar</span></a><nav><a href="../website/index.html">HTML adapter ↗</a><a href="../../port_v2/index.html">Portfolio ↗</a><a href="../examples/index.html">Sky lab ↗</a></nav></header>
+<section class="intro"><p class="eyebrow">A CLOUD LIBRARY, WITHOUT A FIXED SHAPE</p><h1>One sky.<br>Many possibilities.</h1><p>Each frame is a real cloud experiment. Play one, move its light, change its settings, or take the configuration into your own project.</p><p id="status" role="status">Choose a frame to explore. Static previews keep the gallery quiet.</p></section>
+<main><div id="gallery" class="gallery" aria-label="Cloud library feature demonstrations"></div>
+<aside id="inspector"><div class="inspector-heading"><p class="eyebrow">FRAME SETTINGS</p><h2 id="selectedTitle">Select an experiment</h2><button id="pauseAll" type="button">Pause</button></div><p id="selectedDescription">Select a frame or its Play button to tune it here.</p>
+<div class="row"><label for="quality">Quality</label><select id="quality"><option value="low">Low</option><option value="medium" selected>Medium</option><option value="high">High</option></select></div>
+<div class="row"><label for="lightningMode">Lightning</label><select id="lightningMode"><option value="off">Off</option><option value="manual">Manual</option><option value="hover">Hover</option><option value="random">Random</option></select></div>
+<div class="row"><label for="timeOfDay">Time palette</label><select id="timeOfDay"><option value="custom">Custom / preset</option><option value="dawn">Dawn</option><option value="day">Day</option><option value="noon">Noon</option><option value="dusk">Dusk</option><option value="night">Night</option></select></div>
+<div class="row"><label for="transparent">Transparent background</label><input id="transparent" type="checkbox"></div>
+<div class="row"><label for="lightColor">Light color</label><input id="lightColor" type="color" value="#8edaff"></div>
+<div class="row"><label for="cloudColor">Cloud color</label><input id="cloudColor" type="color" value="#f4f7ff"></div>
+<div class="row"><label for="skyColor">Sky color</label><input id="skyColor" type="color" value="#78b9eb"></div>
+<div id="controls"></div><details><summary>Configuration</summary><textarea id="configuration" rows="10" aria-label="Frame configuration JSON" spellcheck="false"></textarea><div class="actions"><button id="export" type="button">Get settings</button><button id="apply" type="button">Apply</button></div><p id="configStatus" role="status"></p></details>
+<details><summary>Use this feature</summary><pre id="snippet"></pre></details></aside></main>
+<footer>Built with Cloud Kit’s public API. <a href="../README.md">Read the library API ↗</a></footer>
+<script src="../dist/cloud-kit.js?v=0.3.2"></script><script src="gallery.js"></script>
+</body></html>

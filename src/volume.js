@@ -1,0 +1,625 @@
+import { CloudControls } from './config.js';
+/* Continuous vapor advection and sunlit volumetric cloud rendering. */
+'use strict';
+  const vertex = `#version 300 es
+  in vec2 aPosition;
+  void main() { gl_Position = vec4(aPosition, 0.0, 1.0); }`;
+  const fragment = `#version 300 es
+  precision highp float;
+  uniform sampler2D uDensity;
+  uniform sampler2D uFormation;
+  uniform vec2 uSize;
+  uniform vec2 uResolution;
+  uniform float uRadius;
+  uniform float uTime;
+  uniform float uDetailScale;
+  uniform float uMarchSteps;
+  uniform float uShadowStride;
+  uniform float uVaporDensity;
+  uniform vec3 uLightDirection;
+  uniform float uGlare;
+  uniform vec3 uGlareTint;
+  uniform vec3 uPointLight;
+  uniform vec3 uPointColor;
+  uniform float uPointPower;
+  uniform float uPointReach;
+  uniform float uElectricGlow;
+  uniform vec2 uEdgeFade;
+  uniform vec3 uLit;
+  uniform vec3 uShade;
+  out vec4 color;
+  float hash(vec3 p) {
+    p = fract(p * 0.1031);
+    p += dot(p, p.yzx + 33.33);
+    return fract((p.x + p.y) * p.z);
+  }
+  float noise(vec3 p) {
+    vec3 i = floor(p), f = fract(p);
+    f = f * f * (3.0 - 2.0 * f);
+    return mix(mix(mix(hash(i), hash(i+vec3(1,0,0)), f.x),
+                   mix(hash(i+vec3(0,1,0)), hash(i+vec3(1,1,0)), f.x), f.y),
+               mix(mix(hash(i+vec3(0,0,1)), hash(i+vec3(1,0,1)), f.x),
+                   mix(hash(i+vec3(0,1,1)), hash(i+vec3(1,1,1)), f.x), f.y), f.z);
+  }
+  // Analytic gradient of the same coarse noise that makes the cloud billows.
+  // This reveals their rounded faces without extra volume marches.
+  vec3 billowGradient(vec3 p) {
+    vec3 i=floor(p),f=fract(p),w=f*f*(3.0-2.0*f),dw=6.0*f*(1.0-f);
+    float a=hash(i),b=hash(i+vec3(1,0,0)),c=hash(i+vec3(0,1,0)),d=hash(i+vec3(1,1,0));
+    float e=hash(i+vec3(0,0,1)),g=hash(i+vec3(1,0,1)),h=hash(i+vec3(0,1,1)),j=hash(i+vec3(1,1,1));
+    float low=mix(mix(a,b,w.x),mix(c,d,w.x),w.y);
+    float high=mix(mix(e,g,w.x),mix(h,j,w.x),w.y);
+    float dx=mix(mix(b-a,d-c,w.y),mix(g-e,j-h,w.y),w.z)*dw.x;
+    float dy=mix(mix(c-a,d-b,w.x),mix(h-e,j-g,w.x),w.z)*dw.y;
+    return vec3(dx,dy,(high-low)*dw.z);
+  }
+  float normalMatter(vec2 uv) {
+    vec3 m=texture(uDensity,uv).rgb;
+    return max(m.r,(m.g+m.b)*1.1);
+  }
+  float vapor(vec3 p) {
+    float r = uRadius;
+    vec3 q = p / r;
+    vec3 drift = vec3(uTime * 0.055, -uTime * 0.036, uTime * 0.048);
+    float billow = noise(q * 1.35 + drift);
+    float detail = noise(q * 4.1 + vec3(7.2,3.7,1.9) + drift);
+    float fringe = noise(q * 10.8 + vec3(2.1,8.9,4.3) + drift*.7);
+    // Long, overlapping waves let the vapor wander without bending the whole word.
+    float phase = uTime*.38;
+    vec2 breeze = vec2(sin(q.y*.28+phase)+sin(q.x*.19-phase*.7)*.5,
+                       cos(q.x*.24+phase*.8)) * r*.1;
+    vec2 warp = vec2(billow-.5, detail-.5) * r * .52 * uDetailScale + breeze;
+    vec2 sampleUV = (p.xy + warp) / uSize;
+    if (any(lessThan(sampleUV, vec2(0))) || any(greaterThan(sampleUV, vec2(1)))) return 0.0;
+    vec3 matter = texture(uDensity, sampleUV).rgb;
+    float gathering = texture(uFormation, sampleUV).r;
+    // Billows condense at different times, so arriving text grows out of vapor.
+    float condensed = smoothstep(billow*.28, .7 + billow*.28, gathering);
+    float m = matter.r * condensed;
+    float shape = (m - .40) * 2.6 - q.z * q.z * .72;
+    float turbulence = (billow * .65 + detail * .27 + fringe * .08 - .5) * 1.55 * uDetailScale;
+    float breath = .91 + .09*sin(phase + q.x*.18 + q.y*.22);
+    float porosity = .66 + .34*smoothstep(.2,.8,detail);
+    float attached = max(0.0, shape + turbulence) * smoothstep(.12, .38, m)*.72*porosity*breath;
+    float veil = max(0.0,(m-.22)*.7-q.z*q.z*.22+turbulence*.14);
+    veil *= smoothstep(.1,.4,m)*.12;
+    // Detached vapor has thin, broken edges instead of the solid body of a letter.
+    float wisps = noise(q * vec3(2.0, 3.8, 2.7) + drift*1.8 + vec3(12,4,9));
+    float loose = max(0.0, matter.g * (1.55 + turbulence*.35) - q.z*q.z*.65);
+    loose *= smoothstep(.005,.11,matter.g)*(.24 + .24*wisps);
+    // Tap vapor is material lifted from the letters, rendered as a broad,
+    // translucent wake. Its scale stays airy even on small body text.
+    float lifted = 0.0;
+    if (matter.b > .003) {
+      vec3 air = p / max(12.0, r);
+      float folds = noise(air*vec3(1.1,2.3,1.4)+drift+vec3(4,11,7));
+      lifted = max(0.0, matter.b*2.4-q.z*q.z*.32);
+      lifted *= smoothstep(.003,.045,matter.b)*(.45+.35*folds)*.6*uVaporDensity;
+    }
+    return max(attached,max(loose,lifted))+veil;
+  }
+  vec2 shadowAt(vec3 p,vec3 direction,float beam){
+    float sun=vapor(p+direction*uRadius*.38)*.38+vapor(p+direction*uRadius*.83)*.45+vapor(p+direction*uRadius*1.4)*.52;
+    float point=0.0;
+    if(beam>.001){vec3 lampDirection=normalize(uPointLight-p);point=vapor(p)*.35+vapor(p+lampDirection*uRadius*.95)*1.4;}
+    return vec2(sun,point);
+  }
+  void main() {
+    vec2 uv = vec2(gl_FragCoord.x/uResolution.x, 1.0-gl_FragCoord.y/uResolution.y);
+    // Empty sky avoids all ray marching work.
+    vec3 matter = texture(uDensity, uv).rgb;
+    if (matter.r < .16 && matter.g < .015 && matter.b < .006) { color = vec4(0); return; }
+    vec2 xy = uv * uSize;
+    float r = uRadius;
+    float stepSize = r * 4.4 / uMarchSteps;
+    float transmittance = 1.0;
+    vec3 lightDirection = normalize(uLightDirection);
+    float beam = 0.0;
+    if (uPointPower > .001) {
+      float reach = max(1.0,uPointReach);
+      beam = (1.0-smoothstep(reach*.15,reach,length(xy-uPointLight.xy)))*uPointPower;
+    }
+    vec2 fieldGradient=vec2(0);
+    if (beam > .001) {
+      float offset=max(1.0,r*.2);
+      vec2 du=vec2(offset/uSize.x,0),dv=vec2(0,offset/uSize.y);
+      fieldGradient=vec2(normalMatter(uv+du)-normalMatter(uv-du),
+        normalMatter(uv+dv)-normalMatter(uv-dv))/(2.0*offset);
+    }
+    vec3 radiance = vec3(0);
+    vec2 shadowA=vec2(0),shadowB=vec2(0);int shadowBlock=-99;
+    float stride=max(1.0,floor(uShadowStride));
+    for (int i = 0; i < 36; i++) {
+      if (float(i) >= uMarchSteps) break;
+      vec3 p = vec3(xy, r*2.2 - (float(i)+.5)*stepSize);
+      float density = vapor(p);
+      if (density > .015) {
+        vec3 direction = lightDirection;
+        vec2 shadow;
+        if(stride<=1.0)shadow=shadowAt(p,direction,beam);
+        else{
+          int block=int(floor(float(i)/stride));
+          if(block!=shadowBlock){
+            vec3 anchor=vec3(xy,r*2.2-(float(block)*stride+.5)*stepSize);
+            shadowA=block==shadowBlock+1?shadowB:shadowAt(anchor,direction,beam);
+            shadowB=shadowAt(anchor-vec3(0,0,stride*stepSize),direction,beam);shadowBlock=block;
+          }
+          shadow=mix(shadowA,shadowB,fract(float(i)/stride));
+        }
+        float sunlight=exp(-shadow.x*.95);
+        float illumination = .45 + .55*sunlight;
+        vec3 scattering = mix(uShade,uLit,illumination);
+        // Highlights follow exposed cloud surfaces and their lighting direction.
+        float glare = min(.85, pow(sunlight,3.0)*uGlare);
+        scattering = mix(scattering,uGlareTint,glare);
+        if (beam > .001) {
+          vec3 drift=vec3(uTime*.055,-uTime*.036,uTime*.048);
+          vec3 gradient=vec3(fieldGradient*2.6,-1.44*p.z/(r*r));
+          gradient+=billowGradient(p/r*1.35+drift)*(1.36*uDetailScale/r);
+          vec3 normal=normalize(-gradient+vec3(0,0,.001));
+          vec3 toLight=uPointLight-p;
+          vec3 lampDirection=normalize(toLight);
+          // Vapor scatters light around its billows instead of reflecting it
+          // like a polished solid. Sample optical depth toward the actual lamp,
+          // and let scattered light softly fill sheltered parts of the cloud.
+          float diffuse=.5+.5*dot(normal,lampDirection);
+          float visibility=exp(-shadow.y*.85);
+          float falloff=1.0/(1.0+dot(toLight,toLight)/(uPointReach*uPointReach));
+          float scatteredFill=.2*exp(-shadow.y*.45);
+          float rim=pow(1.0-abs(normal.z),2.0)*visibility*.08;
+          vec3 lamp=mix(uLit,uPointColor,.9);
+          float localIllumination=clamp(.28+diffuse*visibility*.55+scatteredFill+rim,.35,1.0);
+          vec3 localLight=mix(uShade*.92,lamp,localIllumination);
+          scattering=mix(scattering,localLight,min(.95,beam*falloff));
+          scattering+=lamp*min(2.0,uElectricGlow)*visibility*(.35+.65*diffuse)*min(1.0,beam*falloff)*.45;
+        }
+        float opacity = 1.0-exp(-density*stepSize/r*1.85);
+        radiance += transmittance*opacity*scattering;
+        transmittance *= 1.0-opacity;
+        if (transmittance < .015) break;
+      }
+    }
+    float edge = 1.0;
+    if (uEdgeFade.x > 0.0) edge *= smoothstep(0.0, uEdgeFade.x, xy.y);
+    if (uEdgeFade.y > 0.0) edge *= smoothstep(0.0, uEdgeFade.y, uSize.y-xy.y);
+    color = vec4(radiance, 1.0-transmittance) * edge;
+  }`;
+
+// Per-mask simulation state is isolated; programs and staging buffers are shared.
+const layerKeys=['width','height','cell','gw','gh','radius','target','field','loose','nextLoose','advected','tapVapor','nextTapVapor','advectedTapVapor','tapRemaining','windColumns','windRows','windDiagonals','recovery','brushWeights','vx','vy','bytes','gustSpeed','gustAge','frameAverage','frames','quality','dirty','lastTheme','texture','formationTexture','options','outputWidth','outputHeight','puffs','time'];
+export class CloudVolume {
+    constructor(options = {}) {
+      this.options = options;
+      this.layers=new Map();
+      this.physics=Object.fromEntries(Object.entries(CloudControls.volume).map(([key,value])=>[key,value.default]));
+      this.configure(options.physics||{});
+      this.canvas = document.createElement('canvas');
+      const gl = this.canvas.getContext('webgl2', { alpha: true, depth: false, antialias: false, premultipliedAlpha: true, preserveDrawingBuffer: true, failIfMajorPerformanceCaveat: options.failIfMajorPerformanceCaveat??false, powerPreference: options.powerPreference||'default' });
+      if (!gl) throw new Error('WebGL2 unavailable');
+      this.gl = gl;
+      const compile = (type, source) => {
+        const shader = gl.createShader(type); gl.shaderSource(shader, source); gl.compileShader(shader);
+        if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(shader));
+        return shader;
+      };
+      this.program = gl.createProgram();
+      const vs=compile(gl.VERTEX_SHADER,vertex),fs=compile(gl.FRAGMENT_SHADER,fragment);
+      gl.attachShader(this.program,vs);gl.attachShader(this.program,fs);
+      gl.linkProgram(this.program);
+      gl.deleteShader(vs);gl.deleteShader(fs);
+      if (!gl.getProgramParameter(this.program, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(this.program));
+      gl.useProgram(this.program);
+      const buffer = this.buffer=gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
+      gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1,-1, 1,-1, -1,1, -1,1, 1,-1, 1,1]), gl.STATIC_DRAW);
+      const position = gl.getAttribLocation(this.program, 'aPosition');
+      gl.enableVertexAttribArray(position); gl.vertexAttribPointer(position, 2, gl.FLOAT, false, 0, 0);
+      this.uniforms = Object.fromEntries(['uShadowStride','uDensity','uFormation','uSize','uResolution','uRadius','uTime','uDetailScale','uMarchSteps','uVaporDensity','uLightDirection','uGlare','uGlareTint','uPointLight','uPointColor','uPointPower','uPointReach','uElectricGlow','uEdgeFade','uLit','uShade'].map(key => [key,gl.getUniformLocation(this.program,key)]));
+      this.texture = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D,this.texture);
+      gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MIN_FILTER,gl.LINEAR);
+      gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MAG_FILTER,gl.LINEAR);
+      gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_S,gl.CLAMP_TO_EDGE);
+      gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_T,gl.CLAMP_TO_EDGE);
+      gl.pixelStorei(gl.UNPACK_ALIGNMENT,1);
+      gl.uniform1i(this.uniforms.uDensity,0);
+      gl.uniform1i(this.uniforms.uFormation,1);
+      this.fullFormationTexture=gl.createTexture();
+      gl.activeTexture(gl.TEXTURE1);gl.bindTexture(gl.TEXTURE_2D,this.fullFormationTexture);
+      gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MIN_FILTER,gl.LINEAR);
+      gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MAG_FILTER,gl.LINEAR);
+      gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_S,gl.CLAMP_TO_EDGE);
+      gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_T,gl.CLAMP_TO_EDGE);
+      gl.texImage2D(gl.TEXTURE_2D,0,gl.R8,1,1,0,gl.RED,gl.UNSIGNED_BYTE,new Uint8Array([255]));
+      gl.activeTexture(gl.TEXTURE0);gl.bindTexture(gl.TEXTURE_2D,this.texture);
+      this.gustSpeed = 0; this.gustAge = 10; this.time = 0; this.theme = '';
+      this.trailStrength = 1;
+    }
+    configure(patch={}){
+      for(const [key,value]of Object.entries(patch)){
+        const control=CloudControls.volume[key];
+        if(!control||!Number.isFinite(Number(value)))throw new TypeError('Unknown or invalid cloud physics: '+key);
+        this.physics[key]=Math.max(control.min,Math.min(control.max,Number(value)));
+      }
+      return this;
+    }
+    getOptions(){return JSON.parse(JSON.stringify({...this.options,physics:this.physics,trailStrength:this.trailStrength,vaporDensity:this.vaporDensity??1,airStrength:this.airStrength??1}));}
+    captureLayerState(){return Object.fromEntries(layerKeys.map(key=>[key,this[key]]));}
+    createLayer(mask,{scale=100,puffiness=1,...options}={}){
+      if(this.destroyed)throw new Error('CloudVolume was destroyed.');
+      if(!mask?.getContext||![mask.width,mask.height].every(n=>Number.isInteger(n)&&n>0)||!Number.isFinite(scale)||scale<=0||!Number.isFinite(puffiness)||puffiness<=0)throw new TypeError('Cloud layers require a non-empty canvas and positive scale/puffiness.');
+      const saved=this.captureLayerState(),gl=this.gl;
+      let texture,formationTexture;
+      try{
+        gl.activeTexture(gl.TEXTURE0);
+        texture=gl.createTexture();gl.bindTexture(gl.TEXTURE_2D,texture);
+        for(const key of [gl.TEXTURE_MIN_FILTER,gl.TEXTURE_MAG_FILTER])gl.texParameteri(gl.TEXTURE_2D,key,gl.LINEAR);
+        for(const key of [gl.TEXTURE_WRAP_S,gl.TEXTURE_WRAP_T])gl.texParameteri(gl.TEXTURE_2D,key,gl.CLAMP_TO_EDGE);
+        this.texture=texture;this.options={...saved.options,...options,sharedBuffer:true};
+        this.setFormation(mask,scale,puffiness,true);
+        formationTexture=gl.createTexture();gl.activeTexture(gl.TEXTURE1);gl.bindTexture(gl.TEXTURE_2D,formationTexture);
+        for(const key of [gl.TEXTURE_MIN_FILTER,gl.TEXTURE_MAG_FILTER])gl.texParameteri(gl.TEXTURE_2D,key,gl.LINEAR);
+        for(const key of [gl.TEXTURE_WRAP_S,gl.TEXTURE_WRAP_T])gl.texParameteri(gl.TEXTURE_2D,key,gl.CLAMP_TO_EDGE);
+        gl.texImage2D(gl.TEXTURE_2D,0,gl.R8,1,1,0,gl.RED,gl.UNSIGNED_BYTE,new Uint8Array([255]));
+        this.formationTexture=formationTexture;
+        const layer=Object.freeze({width:mask.width,height:mask.height});
+        this.layers.set(layer,{state:this.captureLayerState(),formation:255,width:this.outputWidth,height:this.outputHeight});return layer;
+      }catch(error){if(texture)gl.deleteTexture(texture);if(formationTexture)gl.deleteTexture(formationTexture);throw error;}
+      finally{Object.assign(this,saved);gl.activeTexture(gl.TEXTURE0);gl.bindTexture(gl.TEXTURE_2D,this.texture);}
+    }
+    renderLayer(layer,dt,paused,pointer,{formation=1,frameMs=16.667,simulate=true,renderScale=1}={}){
+      if(!Number.isFinite(formation)||!Number.isFinite(renderScale))throw new TypeError('Formation and render scale must be finite.');
+      const record=this.layers.get(layer);if(!record||this.destroyed)throw new Error('Unknown or released cloud layer.');
+      const saved=this.captureLayerState(),gl=this.gl;
+      try{
+        Object.assign(this,record.state);
+        const scale=Math.max(.25,Math.min(1,renderScale));this.outputWidth=Math.max(1,Math.round(record.width*scale));this.outputHeight=Math.max(1,Math.round(record.height*scale));
+        if(this.canvas.width<this.outputWidth)this.canvas.width=this.outputWidth;
+        if(this.canvas.height<this.outputHeight)this.canvas.height=this.outputHeight;
+        const value=Math.round(Math.max(0,Math.min(1,formation))*255);
+        if(value!==record.formation){gl.activeTexture(gl.TEXTURE1);gl.bindTexture(gl.TEXTURE_2D,this.formationTexture);gl.texSubImage2D(gl.TEXTURE_2D,0,0,0,1,1,gl.RED,gl.UNSIGNED_BYTE,new Uint8Array([value]));record.formation=value;}
+        gl.activeTexture(gl.TEXTURE0);gl.bindTexture(gl.TEXTURE_2D,this.texture);this.dirty=true;
+        if(record.densityDirty){this.upload();record.densityDirty=false;}
+        if(!paused&&!simulate)this.time+=dt;
+        const rendered=this.render(simulate?dt:0,paused||!simulate,pointer,frameMs);
+        record.state=this.captureLayerState();
+        return {rendered,canvas:this.canvas,x:0,y:this.canvas.height-this.outputHeight,width:this.outputWidth,height:this.outputHeight};
+      }finally{Object.assign(this,saved);gl.activeTexture(gl.TEXTURE0);gl.bindTexture(gl.TEXTURE_2D,this.texture);}
+    }
+    gustLayer(layer,strength=1){
+      const record=this.layers.get(layer);if(!record)throw new Error('Unknown or released cloud layer.');
+      const saved=this.captureLayerState();try{Object.assign(this,record.state);this.gust(strength);record.state=this.captureLayerState();}finally{Object.assign(this,saved);}
+    }
+    recoverLayer(layer,elapsed){
+      const record=this.layers.get(layer);if(!record)throw new Error('Unknown or released cloud layer.');
+      if(!Number.isFinite(elapsed)||elapsed<0)throw new TypeError('Recovery elapsed time must be finite and nonnegative.');
+      const state=record.state,amount=1-Math.exp(-elapsed*this.physics.recoveryRate),fade=Math.exp(-elapsed*this.physics.vaporDissipation),velocityFade=Math.exp(-elapsed*4);
+      // One relaxation pass, rather than replaying thousands of hidden frames.
+      for(let i=0;i<state.field.length;i++){
+        state.field[i]+=(state.target[i]-state.field[i])*amount;state.loose[i]*=fade;
+        if(state.tapVapor)state.tapVapor[i]*=fade;
+        state.vx[i]*=velocityFade;state.vy[i]*=velocityFade;state.recovery[i]=Math.max(0,state.recovery[i]-elapsed);
+      }
+      state.gustSpeed*=Math.exp(-elapsed*1.1);state.gustAge+=elapsed;state.time+=elapsed;
+      state.tapRemaining=Math.max(0,state.tapRemaining-elapsed);if(!state.tapRemaining)state.tapVapor=state.nextTapVapor=state.advectedTapVapor=null;
+      state.puffs=(state.puffs||[]).map(p=>({...p,age:p.age+elapsed,idle:p.idle+elapsed,remaining:p.remaining*Math.exp(-elapsed*5)})).filter(p=>p.idle<this.physics.puffDuration);
+      record.densityDirty=true;
+    }
+    releaseLayer(layer){
+      const record=this.layers.get(layer);if(!record)return;
+      this.gl.deleteTexture(record.state.texture);this.gl.deleteTexture(record.state.formationTexture);this.layers.delete(layer);
+    }
+    setMask(mask,{scale=100,puffiness=1}={}) {
+      this.setFormation(mask,scale,puffiness,true);return this;
+    }
+    setFormation(mask,fontSize,puffiness,instant) {
+      this.width = mask.width; this.height = mask.height;
+      const gridSize=this.options.gridSize || 360;
+      this.cell = Math.max(this.options.minCell || 2.3,this.width/gridSize,this.height/gridSize);
+      const gw = Math.ceil(this.width/this.cell), gh = Math.ceil(this.height/this.cell);
+      const changed = gw !== this.gw || gh !== this.gh;
+      this.gw=gw; this.gh=gh;
+      const n=gw*gh, pixels=mask.getContext('2d').getImageData(0,0,this.width,this.height).data;
+      const inside=new Uint8Array(n);
+      for(let y=0;y<gh;y++) for(let x=0;x<gw;x++) {
+        const px=Math.min(this.width-1,Math.round((x+.5)*this.cell));
+        const py=Math.min(this.height-1,Math.round((y+.5)*this.cell));
+        inside[y*gw+x]=pixels[(py*this.width+px)*4+3]>96 ? 1 : 0;
+      }
+      // Two chamfer transforms give a smooth signed distance around the script.
+      const distance = value => {
+        const d=new Float32Array(n);
+        for(let i=0;i<n;i++) d[i]=inside[i]===value?0:10000;
+        for(let y=0;y<gh;y++) for(let x=0;x<gw;x++) {
+          const i=y*gw+x;
+          if(x) d[i]=Math.min(d[i],d[i-1]+1);
+          if(y) d[i]=Math.min(d[i],d[i-gw]+1);
+          if(x&&y) d[i]=Math.min(d[i],d[i-gw-1]+1.4142);
+          if(x+1<gw&&y) d[i]=Math.min(d[i],d[i-gw+1]+1.4142);
+        }
+        for(let y=gh-1;y>=0;y--) for(let x=gw-1;x>=0;x--) {
+          const i=y*gw+x;
+          if(x+1<gw) d[i]=Math.min(d[i],d[i+1]+1);
+          if(y+1<gh) d[i]=Math.min(d[i],d[i+gw]+1);
+          if(x+1<gw&&y+1<gh) d[i]=Math.min(d[i],d[i+gw+1]+1.4142);
+          if(x&&y+1<gh) d[i]=Math.min(d[i],d[i+gw-1]+1.4142);
+        }
+        return d;
+      };
+      const outer=distance(1),inner=distance(0);
+      this.radius=Math.max(this.options.minRadius || 7,fontSize*(this.options.radiusFactor || .105))*puffiness;
+      this.target=new Float32Array(n);
+      for(let i=0;i<n;i++) this.target[i]=Math.max(0,Math.min(1,.68-(outer[i]-inner[i])*this.cell/(this.radius*2.7)));
+      if(changed||instant||!this.field) this.field=this.target.slice();
+      this.loose=new Float32Array(n);this.nextLoose=new Float32Array(n);this.advected=new Float32Array(n);
+      this.tapVapor=this.nextTapVapor=this.advectedTapVapor=null;this.tapRemaining=0;
+      this.windColumns=new Float32Array(gw);this.windRows=new Float32Array(gh);this.windDiagonals=new Float32Array(gw+gh);
+      this.recovery=new Float32Array(n);this.brushWeights=new Float32Array(n);
+      this.vx=new Float32Array(n);this.vy=new Float32Array(n);this.bytes=new Uint8Array(n*3);
+      this.puffs=[];
+      this.gustSpeed=0;this.gustAge=10;
+      const resolution=Math.min(1,(this.options.renderWidth || 800)/this.width,(this.options.renderHeight || 650)/this.height);
+      this.outputWidth=Math.max(1,Math.round(this.width*resolution));
+      this.outputHeight=Math.max(1,Math.round(this.height*resolution));
+      if(!this.options.sharedBuffer) {
+        this.canvas.width=this.outputWidth;this.canvas.height=this.outputHeight;
+      }
+      const gl=this.gl;
+      gl.texImage2D(gl.TEXTURE_2D,0,gl.RGB8,gw,gh,0,gl.RGB,gl.UNSIGNED_BYTE,null);
+      this.frameAverage=16.667;this.frames=0;this.quality=resolution;this.dirty=true;
+      this.upload();
+    }
+    upload() {
+      for(let i=0;i<this.field.length;i++) {
+        this.bytes[i*3]=Math.round(Math.max(0,Math.min(1,this.field[i]))*255);
+        this.bytes[i*3+1]=Math.round(Math.max(0,Math.min(1,this.loose[i]))*255);
+        this.bytes[i*3+2]=this.tapVapor?Math.round(Math.max(0,Math.min(1,this.tapVapor[i]))*255):0;
+      }
+      this.gl.texSubImage2D(this.gl.TEXTURE_2D,0,0,0,this.gw,this.gh,this.gl.RGB,this.gl.UNSIGNED_BYTE,this.bytes);
+    }
+    gust(strength=1) {
+      strength=Math.max(0,Math.min(2,strength));if(strength===0)return;
+      this.gustSpeed=260*strength;this.gustAge=0;
+      for(let i=0;i<this.field.length;i++) {
+        this.loose[i]=Math.min(1,this.loose[i]+this.field[i]*Math.min(.95,.82*strength));
+        this.field[i]*=Math.max(.04,1-.92*strength);this.recovery[i]=1.8*strength;
+      }
+    }
+    simulate(dt,pointer) {
+      if(pointer.effects?.some(effect=>effect.kind==='puff'&&(effect.strength??1)>0)){
+        if(!this.tapVapor){
+          this.tapVapor=new Float32Array(this.gw*this.gh);
+          this.nextTapVapor=new Float32Array(this.gw*this.gh);
+          this.advectedTapVapor=new Float32Array(this.gw*this.gh);
+        }
+        this.tapRemaining=this.physics.vaporLifetime;
+      }
+      this.tapRemaining=Math.max(0,this.tapRemaining-dt);
+      if(this.tapRemaining===0)this.tapVapor=this.nextTapVapor=this.advectedTapVapor=null;
+      const {gw,gh,cell,vx,vy,field,loose,nextLoose,advected,tapVapor,nextTapVapor,advectedTapVapor,target,recovery,brushWeights}=this;
+      this.gustAge+=dt;this.gustSpeed*=Math.exp(-dt*1.1);
+      const speed=Math.hypot(pointer.vx||0,pointer.vy||0);
+      const motion=Math.min(1,speed/420);
+      const strength=Math.max(0,Math.min(2,this.trailStrength));
+      const breeze=this.environmentWind||{x:0,y:0,strength:0};
+      const windRelease=Math.min(.008,Math.max(0,breeze.strength)*dt*.075);
+      // Each tap refills a bounded emission budget and refreshes the breeze.
+      // Released material keeps its own motion and fade; taps never stack mass.
+      const effects=[];
+      for(const effect of pointer.effects||[]){
+        if(effect.kind==='puff'){
+          if(!(effect.strength??1))continue;
+          this.puffs??=[];
+          const existing=this.puffs.find(p=>Math.hypot(p.x-effect.x,p.y-effect.y)<60);
+          if(existing){
+            existing.strength=Math.max(existing.strength,effect.strength??1);
+            existing.boost=Math.min(1.1,(existing.boost||0)+.3*(effect.strength??1));
+            existing.remaining=Math.min(.4,existing.remaining+.26*(effect.strength??1));
+            existing.idle=0;
+          }
+          else{if(this.puffs.length>=8)this.puffs.shift();this.puffs.push({...effect,age:0,idle:0,remaining:.26*(effect.strength??1)});}
+        }else effects.push(effect);
+      }
+      const smooth=t=>t*t*(3-2*t);
+      for(const puff of this.puffs||[]){
+        puff.boost=(puff.boost||0)*Math.exp(-dt*3);
+        puff.age+=dt;puff.idle+=dt;
+        const arrival=smooth(Math.max(0,Math.min(1,(puff.age-.06)/.45)));
+        const amount=puff.remaining*(1-Math.exp(-dt*5))*arrival;
+        puff.remaining=Math.max(0,puff.remaining-amount);
+        if(amount>0)effects.push({...puff,amount});
+      }
+      this.puffs=(this.puffs||[]).filter(puff=>puff.idle<this.physics.puffDuration);
+      // Holds rotate the local flow; taps release a gradually growing air puff.
+      for(const effect of effects){
+        const gain=Math.max(0,Math.min(2,effect.strength??1));if(gain===0)continue;
+        const reach=Math.max(36,Math.min(76,this.radius*2.8+30))*(.85+.15*gain);
+        const amount=effect.kind==='stir'?Math.min(.08,dt*.4*gain):effect.amount;
+        const left=Math.max(0,Math.floor((effect.x-reach*1.7)/cell));
+        const right=Math.min(gw-1,Math.ceil((effect.x+reach*1.7)/cell));
+        const top=Math.max(0,Math.floor((effect.y-reach*1.7)/cell));
+        const bottom=Math.min(gh-1,Math.ceil((effect.y+reach*1.7)/cell));
+        for(let y=top;y<=bottom;y++)for(let x=left;x<=right;x++){
+          const dx=(x+.5)*cell-effect.x,dy=(y+.5)*cell-effect.y;
+          const weight=Math.exp(-(dx*dx+dy*dy)/(reach*reach*.42));
+          if(weight<.004)continue;
+          const swirl=effect.kind==='stir';
+          const i=y*gw+x,floor=target[i]*(swirl?.5:this.physics.tapRetention);
+          const capacity=swirl?1:Math.max(0,this.physics.tapCapacity-tapVapor[i]);
+          const removed=Math.max(0,Math.min(field[i]-floor,(swirl?field[i]:target[i])*amount*weight,capacity));
+          field[i]-=removed;
+          if(swirl){
+            loose[i]=Math.min(1,loose[i]+removed*.75);
+            vx[i]+=(-dy/reach*85)*weight*gain;
+            vy[i]+=(dx/reach*85-20)*weight*gain;
+            vx[i]=Math.max(-180,Math.min(180,vx[i]));vy[i]=Math.max(-180,Math.min(180,vy[i]));
+          }else tapVapor[i]+=removed;
+          // Tap weather can replenish while the finger keeps tapping. A hold
+          // still delays recovery, as does the existing mouse weathering.
+          if(removed>0&&swirl)recovery[i]=Math.max(recovery[i],.9);
+        }
+      }
+      if(pointer.active&&motion>.015&&strength>0&&pointer.segments?.length) {
+        const dragging=pointer.down||pointer.segments.some(segment=>segment.down);
+        // Sweep the complete pointer path, so fast strokes do not skip over vapor.
+        const reach=Math.max(27,Math.min(66,this.radius*1.4))*(dragging?1.35:1)*this.physics.brushSize;
+        const visited=[];brushWeights.fill(0);
+        for(const segment of pointer.segments) {
+          const {ax,ay,bx,by}=segment,sx=bx-ax,sy=by-ay,length2=sx*sx+sy*sy;
+          const left=Math.max(0,Math.floor((Math.min(ax,bx)-reach*1.7)/cell));
+          const right=Math.min(gw-1,Math.ceil((Math.max(ax,bx)+reach*1.7)/cell));
+          const top=Math.max(0,Math.floor((Math.min(ay,by)-reach*1.7)/cell));
+          const bottom=Math.min(gh-1,Math.ceil((Math.max(ay,by)+reach*1.7)/cell));
+          for(let y=top;y<=bottom;y++) for(let x=left;x<=right;x++) {
+            const px=(x+.5)*cell,py=(y+.5)*cell;
+            const t=length2?Math.max(0,Math.min(1,((px-ax)*sx+(py-ay)*sy)/length2)):0;
+            const dx=px-(ax+sx*t),dy=py-(ay+sy*t);
+            const influence=Math.exp(-(dx*dx+dy*dy)/(reach*reach*.48));
+            if(influence<.004) continue;
+            const i=y*gw+x;
+            if(!brushWeights[i]) visited.push(i);
+            brushWeights[i]=Math.max(brushWeights[i],influence);
+          }
+        }
+        const flow=Math.min(dragging?210:135,speed*(dragging?.23:.16))*Math.sqrt(strength);
+        const weathering=.65+Math.min(2.35,speed/750);
+        const windX=pointer.vx/speed*flow+22,windY=pointer.vy/speed*flow-18;
+        for(const i of visited) {
+          const influence=brushWeights[i];
+          // Weather away attached cloud without transporting or compressing its letters.
+          const gathering=this.formationWeights?this.formationWeights[i]/255:1;
+          const removed=field[i]*(1-Math.exp(-influence*motion*weathering*this.physics.weathering*strength*gathering*dt*(dragging?9:6)));
+          field[i]-=removed;loose[i]=Math.min(1,loose[i]+removed*.62);
+          if(influence*motion>.08) recovery[i]=Math.max(recovery[i],1.35+influence*.65);
+          const blend=1-Math.exp(-influence*motion*dt*22);
+          vx[i]+=(windX-vx[i])*blend;vy[i]+=(windY-vy[i])*blend;
+        }
+      }
+      const drag=Math.exp(-dt*1.35),fade=Math.exp(-dt*.95),tapFade=Math.exp(-dt*this.physics.vaporDissipation);
+      const breaths=(this.puffs||[]).map(p=>{
+        const x=p.x+65*p.idle,y=p.y-72*p.idle;
+        const reach=Math.max(48,Math.min(92,this.radius*2.8+38))+p.idle*24;
+        p.airColumns??=new Float32Array(gw);p.airRows??=new Float32Array(gh);
+        // Separable Gaussian avoids evaluating an exponential per grid cell.
+        for(let i=0;i<gw;i++)p.airColumns[i]=Math.exp(-Math.pow(((i+.5)*cell-x)/reach,2));
+        for(let i=0;i<gh;i++)p.airRows[i]=Math.exp(-Math.pow(((i+.5)*cell-y)/reach,2));
+        return {x,y,reach,columns:p.airColumns,rows:p.airRows,
+          speed:(.6+.4*Math.sin(Math.PI*Math.min(1,p.idle/this.physics.puffDuration)))*Math.sqrt(p.strength??1)*(1+(p.boost||0))*Math.max(0,Math.min(2,this.airStrength??1))};
+      });
+      // Smooth, diverging directions fold the wake into wisps. The flow itself
+      // is divergence-free, so it cannot squeeze released vapor into a ridge.
+      const scale=Math.max(48,this.radius*1.7),phase=this.time*.42;
+      for(let x=0;x<gw;x++) this.windColumns[x]=Math.sin(x*cell/scale-phase)*14;
+      for(let y=0;y<gh;y++) this.windRows[y]=Math.sin(y*cell/scale+phase)*14;
+      for(let d=0;d<gw+gh;d++) this.windDiagonals[d]=Math.sin(d*cell/(scale*.8)-phase*.7)*9;
+      for(let y=0;y<gh;y++) for(let x=0;x<gw;x++) {
+        const i=y*gw+x;
+        vx[i]*=drag;vy[i]*=drag;
+        const curl=this.windDiagonals[x+y];
+        const sx=x-(vx[i]+this.gustSpeed+18+this.windRows[y]+curl+(breeze.x||0))*dt/cell;
+        const sy=y-(vy[i]-10-this.windColumns[x]-curl+(breeze.y||0))*dt/cell;
+        let density=0;
+        if(sx>=0&&sx<gw-1&&sy>=0&&sy<gh-1) {
+          const ix=Math.floor(sx),iy=Math.floor(sy),fx=sx-ix,fy=sy-iy,j=iy*gw+ix;
+          density=(loose[j]*(1-fx)+loose[j+1]*fx)*(1-fy)+(loose[j+gw]*(1-fx)+loose[j+gw+1]*fx)*fy;
+        }
+        advected[i]=density;
+        // A travelling, widening jet clears the source instead of collecting
+        // detached material under the finger. Both sides of the wake fan out.
+        if(tapVapor){
+          let airX=0,airY=0;
+          for(const breath of breaths){
+            const dx=(x+.5)*cell-breath.x,dy=(y+.5)*cell-breath.y;
+            const weight=breath.columns[x]*breath.rows[y];
+            airX+=(95+dx/breath.reach*38)*weight*breath.speed;
+            airY+=(-110+dy/breath.reach*38)*weight*breath.speed;
+          }
+          const tx=x-(18+this.windRows[y]+curl+(breeze.x||0)+airX)*dt/cell;
+          const ty=y-(-14-this.windColumns[x]-curl+(breeze.y||0)+airY)*dt/cell;
+          let lifted=0;
+          if(tx>=0&&tx<gw-1&&ty>=0&&ty<gh-1){
+            const ix=Math.floor(tx),iy=Math.floor(ty),fx=tx-ix,fy=ty-iy,j=iy*gw+ix;
+            lifted=(tapVapor[j]*(1-fx)+tapVapor[j+1]*fx)*(1-fy)
+              +(tapVapor[j+gw]*(1-fx)+tapVapor[j+gw+1]*fx)*fy;
+          }
+          advectedTapVapor[i]=lifted;
+        }
+        if(windRelease>0){
+          const removed=field[i]*windRelease;
+          field[i]-=removed;advected[i]=Math.min(1,advected[i]+removed*.6);
+        }
+        recovery[i]=Math.max(0,recovery[i]-dt);
+        // Fresh cloud condenses in place after the wake clears; it never snaps back.
+        if(recovery[i]===0) field[i]+=(target[i]-field[i])*Math.min(.15,dt*this.physics.recoveryRate);
+      }
+      // Spread the transported vapor, rather than mixing it back into the old
+      // stroke. A wider stencil gives the wake room to unravel on every screen.
+      const spread=Math.max(1,Math.round(8/cell)),diffusion=1-Math.exp(-dt*6);
+      for(let y=0;y<gh;y++) for(let x=0;x<gw;x++) {
+        const i=y*gw+x;
+        const neighbors=((x>=spread?advected[i-spread]:0)+(x+spread<gw?advected[i+spread]:0)
+          +(y>=spread?advected[i-spread*gw]:0)+(y+spread<gh?advected[i+spread*gw]:0))*.25;
+        nextLoose[i]=(advected[i]+(neighbors-advected[i])*diffusion)*fade;
+        if(tapVapor){
+          const airNeighbors=((x>=spread?advectedTapVapor[i-spread]:0)+(x+spread<gw?advectedTapVapor[i+spread]:0)
+            +(y>=spread?advectedTapVapor[i-spread*gw]:0)+(y+spread<gh?advectedTapVapor[i+spread*gw]:0))*.25;
+          nextTapVapor[i]=(advectedTapVapor[i]+(airNeighbors-advectedTapVapor[i])*diffusion)*tapFade;
+        }
+      }
+      this.loose=nextLoose;this.nextLoose=loose;
+      if(tapVapor){this.tapVapor=nextTapVapor;this.nextTapVapor=tapVapor;}
+    }
+    render(dt,paused,pointer,frameMs=16.667) {
+      const gl=this.gl;
+      if(this.destroyed||gl.isContextLost()) return false;
+      if(!this.field) return true;
+      if(paused&&!this.dirty&&this.lastTheme===this.theme) return true;
+      this.lastTheme=this.theme;this.dirty=false;
+      if(!paused&&!this.options.sharedBuffer&&frameMs<120) {
+        this.frameAverage=this.frameAverage*.96+frameMs*.04;
+        this.frames++;
+        if(this.frames>90&&this.frameAverage>34&&this.canvas.width>420) {
+          this.quality*=.82;
+          this.canvas.width=Math.round(this.width*this.quality);
+          this.canvas.height=Math.round(this.height*this.quality);
+          this.frames=0;this.frameAverage=16.667;
+        }
+      }
+      if(!paused) {this.time+=dt;this.simulate(dt,pointer);this.upload();}
+      gl.activeTexture(gl.TEXTURE1);gl.bindTexture(gl.TEXTURE_2D,this.formationTexture||this.fullFormationTexture);
+      gl.activeTexture(gl.TEXTURE0);gl.bindTexture(gl.TEXTURE_2D,this.texture);
+      const outputWidth=this.options.sharedBuffer?this.outputWidth:this.canvas.width;
+      const outputHeight=this.options.sharedBuffer?this.outputHeight:this.canvas.height;
+      gl.viewport(0,0,outputWidth,outputHeight);
+      gl.clearColor(0,0,0,0);gl.clear(gl.COLOR_BUFFER_BIT);gl.useProgram(this.program);
+      gl.uniform2f(this.uniforms.uSize,this.width,this.height);
+      gl.uniform2f(this.uniforms.uResolution,outputWidth,outputHeight);
+      gl.uniform1f(this.uniforms.uRadius,this.radius);
+      gl.uniform1f(this.uniforms.uTime,this.time);
+      gl.uniform1f(this.uniforms.uDetailScale,this.options.detailScale ?? 1);
+      gl.uniform1f(this.uniforms.uVaporDensity,Math.max(0,Math.min(2,this.vaporDensity??1)));
+      gl.uniform1f(this.uniforms.uShadowStride,Math.max(1,Math.min(8,this.options.shadowStride??3)));
+      gl.uniform1f(this.uniforms.uMarchSteps,Math.max(12,Math.min(36,this.options.raySteps ?? 36)));
+      gl.uniform2f(this.uniforms.uEdgeFade,this.options.edgeFadeTop||0,this.options.edgeFadeBottom||0);
+      const lit=this.lighting?.lit||(this.theme==='theme-sunset'?[1,.96,.89]:this.theme==='theme-twilight'?[.91,.94,1]:[1,1,1]);
+      const shade=this.lighting?.shade||(this.theme==='theme-sunset'?[.79,.68,.73]:this.theme==='theme-twilight'?[.49,.60,.79]:[.66,.76,.87]);
+      gl.uniform3fv(this.uniforms.uLightDirection,this.lighting?.direction||[.55,-.72,.62]);
+      gl.uniform1f(this.uniforms.uGlare,this.lighting?.glare??0);
+      gl.uniform3fv(this.uniforms.uGlareTint,this.lighting?.glareTint||lit);
+      const point=this.pointLight;
+      gl.uniform3fv(this.uniforms.uPointLight,point?[point.x,point.y,point.height]:[-9999,-9999,80]);
+      gl.uniform3fv(this.uniforms.uPointColor,point?.color||[142/255,218/255,1]);
+      gl.uniform1f(this.uniforms.uPointPower,point?.power??0);
+      gl.uniform1f(this.uniforms.uPointReach,point?.reach??220);
+      gl.uniform1f(this.uniforms.uElectricGlow,point?.glow??0);
+      gl.uniform3fv(this.uniforms.uLit,lit);gl.uniform3fv(this.uniforms.uShade,shade);
+      gl.drawArrays(gl.TRIANGLES,0,6);
+      return true;
+    }
+    destroy(){
+      if(this.destroyed)return;this.destroyed=true;
+      for(const layer of this.layers.keys())this.releaseLayer(layer);
+      this.gl.deleteTexture(this.texture);this.gl.deleteTexture(this.fullFormationTexture);
+      this.gl.deleteBuffer(this.buffer);this.gl.deleteProgram(this.program);
+      this.field=this.target=this.loose=this.tapVapor=null;
+    }
+  }
+  CloudVolume.vertexShader=vertex;CloudVolume.fragmentShader=fragment;

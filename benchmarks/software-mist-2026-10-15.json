@@ -1,0 +1,24 @@
+{
+  "renderer": "llvmpipe (LLVM 20.1.2, 256 bits)",
+  "backend": "surfaceless EGL/GLES3",
+  "llvmpipeThreads": 1,
+  "samples": 20,
+  "cases": [
+    {
+      "name": "previous-two-layer-mist",
+      "p50Ms": 1475.424,
+      "p95Ms": 1896.087
+    },
+    {
+      "name": "balanced-two-layer-mist",
+      "p50Ms": 542.732,
+      "p95Ms": 587.363
+    },
+    {
+      "name": "power-saver-one-layer-mist",
+      "p50Ms": 71.142,
+      "p95Ms": 73.639
+    }
+  ],
+  "scope": "Mist passes only; excludes world bake, composite, DOM, image decode, and compositor. Not browser or device FPS."
+}

@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Cloud Kit — ordinary HTML, living clouds</title><meta name="description" content="Attach interactive cloud lettering to ordinary HTML. Native selection, wrapping, links, scrolling, and mobile interaction."><link rel="stylesheet" href="style.css"></head>
+<body>
+<header><a href="../showcase/index.html">CLOUD KIT <span>HTML adapter</span></a><nav><a href="../../port_v2/index.html">Portfolio ↗</a><a href="../README.md">API ↗</a></nav></header>
+<main>
+<div class="sky">
+<section class="hero"><p class="eyebrow">PLAIN HTML. ONE SHARED RENDERER.</p><h1 data-cloud>Words that<br><em>weather.</em></h1><p class="intro">These are ordinary HTML headings. Select them, resize the page, or sweep through the vapor.</p><div class="actions"><button id="puff" type="button">Tap a puff</button><button id="gust" type="button">Send a gust</button><button id="playMode" type="button" aria-pressed="false">Finger sweeping: Off</button><button id="pause" type="button" aria-pressed="false">Pause</button></div><p class="hint">On a phone, tap the lettering for a puff. Turn on finger sweeping to sweep or hold to stir; turn it off to scroll normally.</p><p id="status" role="status">Clouds are forming…</p></section>
+<section class="experiments" aria-label="HTML adapter examples">
+<article><p class="eyebrow">WRAPPING & INHERITED FONTS</p><h2 data-cloud>Small words.<br>Big atmosphere.</h2><p>The mask follows the positions of the actual letters, including line breaks and emphasis.</p></article>
+<article class="checker"><p class="eyebrow">TRANSPARENT OVERLAY</p><h2 data-cloud>Over anything.</h2><p>The lettering has no painted sky. This checkerboard is an ordinary CSS background.</p></article>
+<article><p class="eyebrow">LIVE CONTENT</p><h2 id="editableWord" data-cloud>Hello, sky.</h2><label for="word">Change the text</label><input id="word" type="text" value="Hello, sky." maxlength="40"><p>Content changes regenerate this mask while the other clouds keep their own state.</p></article>
+<article><p class="eyebrow">SEMANTIC LINKS</p><h2 data-cloud><a href="../showcase/index.html">Keep exploring.</a></h2><p>The original link remains clickable and keyboard accessible beneath the decorative canvas.</p></article>
+</section>
+<section class="later"><p class="eyebrow">SCROLL TO THIS SECTION</p><h2 data-cloud>Clouds meet you here.</h2><p>Offscreen elements skip rendering. Their cached state is reused when they return.</p></section>
+<section class="usage"><p class="eyebrow">A SMALL PUBLIC API</p><pre><code>&lt;h1 class="cloud-word"&gt;Hello, sky.&lt;/h1&gt;
+&lt;script src="cloud-kit.js?v=0.3.2"&gt;&lt;/script&gt;
+&lt;script&gt;
+  const words = new CloudKit.CloudText('.cloud-word', {
+    quality: 'medium', timeOfDay: 'dawn'
+  });
+  words.puff();
+&lt;/script&gt;</code></pre></section>
+</div>
+<aside><p class="eyebrow">EFFECTS · NORMAL TEXT</p><h2>Your cloud settings</h2><div class="row"><label for="quality">Quality</label><select id="quality"><option value="low">Low</option><option value="medium" selected>Medium</option><option value="high">High</option></select></div><div class="row"><label for="timeOfDay">Time palette</label><select id="timeOfDay"><option value="dawn" selected>Dawn</option><option value="day">Day</option><option value="noon">Noon</option><option value="dusk">Dusk</option><option value="night">Night</option></select></div><div class="row"><label for="lightColor">Light color</label><input id="lightColor" type="color" value="#8edaff"></div><div class="row"><label for="cloudColor">Cloud color</label><input id="cloudColor" type="color" value="#fff2e6"></div><div class="row"><label for="interactive">Interactions</label><input id="interactive" type="checkbox" checked></div><div id="controls"></div><details><summary>Configuration</summary><textarea id="configuration" rows="8" spellcheck="false" aria-label="Cloud text configuration JSON"></textarea><div class="actions"><button id="export" type="button">Get settings</button><button id="apply" type="button">Apply</button></div><p id="configStatus" role="status"></p></details><details><summary>Rendering diagnostics</summary><p id="metrics">Waiting for first draw.</p><p class="hint">CPU submission time excludes asynchronous GPU work. This is not a device FPS benchmark.</p></details></aside>
+</main><footer>Cloud Kit v0.3 · No framework required. <a href="../DESIGN.md">Design scope ↗</a></footer>
+<script src="../dist/cloud-kit.js?v=0.3.2"></script><script src="demo.js"></script>
+</body></html>

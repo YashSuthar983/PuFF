@@ -1,0 +1,34 @@
+{
+  "name": "@yashsuthar/cloud-kit",
+  "version": "0.3.2",
+  "private": true,
+  "type": "module",
+  "description": "Interactive volumetric clouds, cloud text, and internal lightning for the browser.",
+  "exports": {
+    ".": {
+      "types": "./index.d.ts",
+      "import": "./src/index.js"
+    }
+  },
+  "files": [
+    "src",
+    "demo-performance.js",
+    "dist",
+    "index.d.ts",
+    "README.md",
+    "DESIGN.md",
+    "PERFORMANCE.md",
+    "examples",
+    "build.mjs",
+    "tests",
+    "benchmarks",
+    "showcase",
+    "website",
+    "emerald-demo",
+    "emerald-3d"
+  ],
+  "scripts": {
+    "build": "node build.mjs",
+    "test": "node tests/run.mjs"
+  }
+}
