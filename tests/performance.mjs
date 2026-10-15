@@ -48,7 +48,12 @@ console.log('PASS asynchronous GPU timing, bounded queries, disjoint rejection, 
  // quality:'auto' resolves per device; an explicit quality always wins.
  const software=new Proxy(noTimer,{get(target,key){if(key==='getParameter')return name=>name==='RENDERER'?'Google SwiftShader':8192;return target[key];}});
  const cpu=new CloudScene({...canvas,getContext:()=>software},{autoStart:false,interactive:false});
- assert.deepEqual([cpu.getPerformance().software,cpu.getPerformance().profile,cpu.options.raySteps,cpu.options.fps],[true,'cpu',14,15],'Software WebGL gets the CPU profile');
+ assert.deepEqual([cpu.getPerformance().software,cpu.getPerformance().profile,cpu.options.raySteps,cpu.options.fps,cpu.options.octaves,cpu.options.selfShadow,cpu.options.lightSamples,cpu.options.maxLights,cpu.options.amortize],[true,'cpu',10,30,2,0,0,1,8],'Software WebGL gets the CPU profile');
+ // Amortized: the first frame is drawn whole, then each render draws one band; a finished frame becomes "next".
+ cpu.render();const a=cpu.amortized;assert(a&&a.ready&&a.band===0,'The first amortized frame is drawn whole');const first=a.next;
+ for(let i=1;i<8;i++){cpu.render();assert.equal(a.band,i,'One band per render');}
+ cpu.render();assert.deepEqual([a.band,a.prev],[0,first],'A finished cloud frame becomes next; the last one is blended from');assert.notEqual(a.next,first);
+ cpu.setOptions({amortize:1});cpu.render();assert.equal(cpu.amortized,null,'amortize:1 draws whole frames and frees the targets');
  cpu.setOptions({quality:'high'});assert.deepEqual([cpu.getPerformance().profile,cpu.options.raySteps],['high',64],'An explicit quality overrides auto');
  cpu.setOptions({quality:'auto',raySteps:10});assert.deepEqual([cpu.getPerformance().profile,cpu.options.raySteps],['cpu',10],'Explicit overrides in the same patch win');
  cpu.destroy();

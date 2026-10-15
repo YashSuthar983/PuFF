@@ -12,7 +12,7 @@ try{
  const binary=join(dir,'compile-glsl'),compile=spawnSync('cc',[fileURLToPath(new URL('helpers/compile-glsl.c',import.meta.url)),'-o',binary,'-lEGL','-lGLESv2'],{encoding:'utf8'});
  if(compile.status!==0){skip('C compiler or EGL/GLES development libraries unavailable.');}
  else{
-  const pairs=[['mask',CloudVolume.vertexShader,CloudVolume.fragmentShader],['scene',CloudScene.vertexShader,CloudScene.fragmentShader],['custom',CloudScene.vertexShader,CloudScene.createFragmentShader('return cloudBase(p)*uAmount;',{uAmount:.8})]];
+  const pairs=[['mask',CloudVolume.vertexShader,CloudVolume.fragmentShader],['scene',CloudScene.vertexShader,CloudScene.fragmentShader],['scene-present',CloudScene.vertexShader,CloudScene.presentFragmentShader],['custom',CloudScene.vertexShader,CloudScene.createFragmentShader('return cloudBase(p)*uAmount;',{uAmount:.8})]];
   const window={};vm.runInNewContext(readFileSync(new URL('../emerald-demo/native-rocks.js',import.meta.url),'utf8'),{window});
   pairs.push(['rocks',window.NativeRockScene.vertexShader,window.NativeRockScene.fragmentShader]);
   const mist=readFileSync(new URL('../emerald-demo/demo.js',import.meta.url),'utf8').match(/densityShader:'([^']+)'/)[1];

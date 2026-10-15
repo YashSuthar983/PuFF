@@ -6,7 +6,14 @@ kit.CloudControls=(function(){
 /** Public control metadata: apps may build editors from the same limits as the engine. */
 const control=(label,min,max,step,value,group)=>Object.freeze({label,min,max,step,default:value,group});
 const CloudControls=Object.freeze({
- quality:Object.freeze({cpu:{resolutionLimit:480,raySteps:14,fps:15},low:{resolutionLimit:800,raySteps:20,fps:15},medium:{resolutionLimit:1280,raySteps:40,fps:24},high:{resolutionLimit:1920,raySteps:64,fps:30}}),
+ // Each profile sets every cost switch, so changing profile never leaves another profile's feature level behind.
+ // cpu: for WebGL drawn in software (no usable GPU), where every noise octave and light sample is paid in full.
+ quality:Object.freeze({
+  cpu:{resolutionLimit:480,raySteps:10,fps:30,octaves:2,selfShadow:0,lightSamples:0,maxLights:1,amortize:8},
+  low:{resolutionLimit:800,raySteps:20,fps:15,octaves:4,selfShadow:1,lightSamples:2,maxLights:3,amortize:1},
+  medium:{resolutionLimit:1280,raySteps:40,fps:24,octaves:4,selfShadow:1,lightSamples:2,maxLights:3,amortize:1},
+  high:{resolutionLimit:1920,raySteps:64,fps:30,octaves:4,selfShadow:1,lightSamples:2,maxLights:3,amortize:1}
+ }),
  scene:Object.freeze({
   backgroundOpacity:control('Background opacity (0 = transparent)',0,1,.05,1,'Background'),
   coverage:control('Cloud coverage',0,1,.01,.7,'Cloud structure'),
@@ -29,9 +36,17 @@ const CloudControls=Object.freeze({
   volumeDepth:control('Volume depth',1,12,.1,5.2,'Placement'),
   shapeRadius:control('Puff radius',.2,4,.05,1.8,'Placement'),
   drift:control('Drift speed',0,2,.05,1,'Motion'),
-  raySteps:control('Ray samples',8,96,1,40,'Rendering'),
+  raySteps:control('Ray samples',4,96,1,40,'Rendering'),
+  // Cost switches: each is a separate part of the per-pixel work, so any one can be turned down on its own.
+  octaves:control('Noise octaves (detail layers per sample)',1,4,1,4,'Rendering'),
+  selfShadow:control('Self-shadowing (one extra sample per shadow step)',0,1,1,1,'Rendering'),
+  lightSamples:control('Shadow samples per point light (0 = unshadowed)',0,2,1,2,'Rendering'),
+  maxLights:control('Point lights drawn',0,3,1,3,'Rendering'),
+  // Spread each cloud frame over this many animation frames (in bands), showing a blend of the last two finished
+  // frames meanwhile: no frame ever carries a whole cloud frame's work, at the cost of motion and lights lagging.
+  amortize:control('Frames per cloud frame (1 = whole frames)',1,16,1,1,'Rendering'),
   resolutionLimit:control('Maximum resolution',256,4096,64,1280,'Rendering'),
-  resolutionScale:control('Render scale',.25,2,.05,1,'Rendering'),
+  resolutionScale:control('Render scale',.1,2,.05,1,'Rendering'),
   pixelRatio:control('Pixel ratio',.5,2,.1,1,'Rendering'),
   fps:control('Sky frame rate',4,60,1,24,'Rendering')
  }),
@@ -905,6 +920,10 @@ uniform float uAmbient;
 uniform float uExposure;
 uniform float uSteps;
 uniform float uShadowStride;
+uniform float uOctaves;
+uniform float uSelfShadow;
+uniform float uLightSamples;
+uniform float uMaxLights;
 uniform float uDensityScale;
 uniform float uNoiseScale;
 uniform float uSoftness;
@@ -952,15 +971,16 @@ float cloud(vec3 p){
   if(any(lessThan(uv,vec3(0)))||any(greaterThan(uv,vec3(1))))return 0.;
   float field=texture(uField,uv).r;
   vec3 drift=p+uTime*uWindDirection;
-  float wisps=noise(drift*9.4+vec3(8,3,1));
-  float erosion=(1.-noise(drift*19.4+vec3(7,5,2)))*uDetail*uErosion;
+  float wisps=uOctaves>=3.?noise(drift*9.4+vec3(8,3,1)):.5;
+  float erosion=(1.-(uOctaves>=4.?noise(drift*19.4+vec3(7,5,2)):.5))*uDetail*uErosion;
   return max(0.,field*(1.-uDetail*.18*(1.-wisps))-erosion)*uCoverage*1.6;
  }
  p=p*uNoiseScale+uTime*uWindDirection;
+ // uOctaves (1-4) drops the finer octaves for their mean, .5: the same cloud with less detail, for less work.
  float large=noise(p*1.15+vec3(4,1,7));
- float billow=noise(p*2.6+vec3(2,9,3));
- float detail=noise(p*7.8+vec3(8,3,1));
- float fine=noise(p*19.4+vec3(7,5,2));
+ float billow=uOctaves>=2.?noise(p*2.6+vec3(2,9,3)):.5;
+ float detail=uOctaves>=3.?noise(p*7.8+vec3(8,3,1)):.5;
+ float fine=uOctaves>=4.?noise(p*19.4+vec3(7,5,2)):.5;
  float shape=large*.58+billow*.28+detail*.1+fine*.04;
  float threshold=.65-uCoverage*.26;
  float mass=smoothstep(threshold,threshold+uSoftness,shape);
@@ -973,12 +993,16 @@ float cloud(vec3 p){
 }
 float segmentDistance(vec2 p,vec2 a,vec2 b){vec2 d=b-a;float t=clamp(dot(p-a,d)/max(.00001,dot(d,d)),0.,1.);return length(p-a-d*t);}
 vec3 scatterAt(vec3 p){
- float ambientShade=exp(-max(0.,cloud(p+uLightDirection*.6))*uDensityScale*uShadowStrength);
+ // Without self-shadowing (uSelfShadow 0) every sample is half shaded: flat, but a cloud sample cheaper.
+ float ambientShade=uSelfShadow>.5?exp(-max(0.,cloud(p+uLightDirection*.6))*uDensityScale*uShadowStrength):.5;
  vec3 scattering=uCloudColor*(.035+uAmbient*(.35+.65*ambientShade));
  for(int l=0;l<3;l++){
+  if(float(l)>=uMaxLights)break;
   if(uLights[l].w<=.001)continue;
   vec3 delta=uLights[l].xyz-p;float distance=max(.04,length(delta));vec3 direction=delta/distance;
-  float optical=(cloud(p+direction*distance*.3)+cloud(p+direction*distance*.65))*distance*.9*uDensityScale;
+  // Optical depth toward the light from uLightSamples samples (2, 1 at the midpoint, or 0: unshadowed).
+  float optical=uLightSamples>=2.?cloud(p+direction*distance*.3)+cloud(p+direction*distance*.65):uLightSamples>=1.?cloud(p+direction*distance*.475)*2.:0.;
+  optical*=distance*.9*uDensityScale;
   float light=uLights[l].w*exp(-optical*uExtinction)/(uLightFalloff+distance*distance/max(.01,uLightRadii[l]*uLightRadii[l]));
   scattering+=uLightColors[l]*light*.18*uLightIntensity;
  }
@@ -1029,6 +1053,19 @@ void main(){
  float alpha=max(1.-transmission*(1.-uBackgroundOpacity),boltAlpha);
  vec3 mapped=1.-exp(-radiance*uExposure);
  color=alpha>.00001?vec4(mapped/alpha,alpha):vec4(0);
+}`;
+// Amortized rendering (amortize > 1): shows the blend of the last two finished cloud frames, colour premultiplied so
+// the blend has no dark fringes, back out to the canvas's straight alpha.
+const presentFragment=`#version 300 es
+precision mediump float;
+uniform sampler2D uPrev;
+uniform sampler2D uNext;
+uniform float uMix;
+out vec4 color;
+void main(){
+ ivec2 p=ivec2(gl_FragCoord.xy);vec4 a=texelFetch(uPrev,p,0),b=texelFetch(uNext,p,0);
+ vec4 m=mix(vec4(a.rgb*a.a,a.a),vec4(b.rgb*b.a,b.a),uMix);
+ color=m.a>.00001?vec4(m.rgb/m.a,m.a):vec4(0);
 }`;
 const profiles=CloudControls.quality;
 // quality:'auto' picks a profile for the device: 'cpu' when WebGL is drawn in software (no usable GPU: SwiftShader,
@@ -1088,7 +1125,8 @@ class CloudScene {
   if(!gl.getProgramParameter(this.program,gl.LINK_STATUS))throw new Error(gl.getProgramInfoLog(this.program));
   this.buffer=gl.createBuffer();gl.bindBuffer(gl.ARRAY_BUFFER,this.buffer);gl.bufferData(gl.ARRAY_BUFFER,new Float32Array([-1,-1,1,-1,-1,1,-1,1,1,-1,1,1]),gl.STATIC_DRAW);
   gl.useProgram(this.program);const position=gl.getAttribLocation(this.program,'aPosition');gl.enableVertexAttribArray(position);gl.vertexAttribPointer(position,2,gl.FLOAT,false,0,0);
-  this.uniforms=Object.fromEntries(['uBackgroundOpacity','uLightRadii[0]','uShadowStride','uResolution','uTime','uCoverage','uAmbient','uExposure','uSteps','uLights[0]','uLightColors[0]','uBolts[0]','uBoltEnds[0]','uBoltColors[0]','uBoltCount','uPreset','uShape','uDetail','uCloudColor','uBackground','uField','uHasField','uExtent','uDensityScale','uNoiseScale','uSoftness','uErosion','uExtinction','uShadowStrength','uLightIntensity','uLightFalloff','uViewScale','uVolumeDepth','uShapeRadius','uWindDirection','uLightDirection','uOffset','uScale'].map(k=>[k,gl.getUniformLocation(this.program,k)]));
+  this.compile=compile;this.position=position;this.amortized=null;this.presentProgram=null;
+  this.uniforms=Object.fromEntries(['uOctaves','uSelfShadow','uLightSamples','uMaxLights','uBackgroundOpacity','uLightRadii[0]','uShadowStride','uResolution','uTime','uCoverage','uAmbient','uExposure','uSteps','uLights[0]','uLightColors[0]','uBolts[0]','uBoltEnds[0]','uBoltColors[0]','uBoltCount','uPreset','uShape','uDetail','uCloudColor','uBackground','uField','uHasField','uExtent','uDensityScale','uNoiseScale','uSoftness','uErosion','uExtinction','uShadowStrength','uLightIntensity','uLightFalloff','uViewScale','uVolumeDepth','uShapeRadius','uWindDirection','uLightDirection','uOffset','uScale'].map(k=>[k,gl.getUniformLocation(this.program,k)]));
   this.customUniforms=Object.fromEntries(Object.entries(options.uniforms||{}).map(([key,value])=>[key,{value,location:gl.getUniformLocation(this.program,key)}]));
   this.fieldTexture=gl.createTexture();gl.bindTexture(gl.TEXTURE_3D,this.fieldTexture);
   for(const key of [gl.TEXTURE_MIN_FILTER,gl.TEXTURE_MAG_FILTER])gl.texParameteri(gl.TEXTURE_3D,key,gl.LINEAR);
@@ -1226,6 +1264,11 @@ class CloudScene {
   this.lightning.update(dt,{...this.pointer,color,enabled:active,bounds:{x:0,y:0,width:this.width,height:this.height}},(reach,origin)=>Array.from({length:12},(_,i)=>{const a=i*.618*6.283;return{x:origin.x+Math.cos(a)*reach*(.4+i/24),y:origin.y+Math.sin(a)*reach*(.4+i/24)};}));
   const lights=[...this.externalLights,...(this.options.lightning?this.lightning.getLights():[])];
   const segments=[...this.externalSegments,...(this.options.lightning?this.lightning.getSegments():[])];
+  const bands=Math.round(this.options.amortize),amortized=bands>1?this.amortizedTargets():null;
+  if(!amortized&&this.amortized)this.releaseAmortized();
+  if(amortized&&this.paused)amortized.ready=false;   // a still frame is drawn whole
+  // Amortized, one cloud frame keeps the uniforms (time, lights) it started with, so its bands match.
+  if(amortized&&amortized.ready&&amortized.band>0)return this.drawFrame(amortized,bands,time);
   const {positions,colors,starts,ends,boltColors,radii}=this.lightBuffers;
   for(const buffer of Object.values(this.lightBuffers))buffer.fill(0);
   const aspect=this.canvas.width/this.canvas.height;
@@ -1235,7 +1278,7 @@ class CloudScene {
   gl.useProgram(this.program);gl.viewport(0,0,this.canvas.width,this.canvas.height);
   gl.uniform2f(this.uniforms.uResolution,this.canvas.width,this.canvas.height);gl.uniform1f(this.uniforms.uTime,time);
   gl.uniform1f(this.uniforms.uCoverage,this.options.coverage);gl.uniform1f(this.uniforms.uAmbient,this.options.ambient);gl.uniform1f(this.uniforms.uExposure,this.options.exposure);gl.uniform1f(this.uniforms.uSteps,this.options.raySteps);
-  for(const [key,name]of [['backgroundOpacity','uBackgroundOpacity'],['shadowStride','uShadowStride'],['density','uDensityScale'],['noiseScale','uNoiseScale'],['softness','uSoftness'],['erosion','uErosion'],['extinction','uExtinction'],['shadowStrength','uShadowStrength'],['lightIntensity','uLightIntensity'],['lightFalloff','uLightFalloff'],['viewScale','uViewScale'],['volumeDepth','uVolumeDepth'],['shapeRadius','uShapeRadius']])gl.uniform1f(this.uniforms[name],this.options[key]);
+  for(const [key,name]of [['octaves','uOctaves'],['selfShadow','uSelfShadow'],['lightSamples','uLightSamples'],['maxLights','uMaxLights'],['backgroundOpacity','uBackgroundOpacity'],['shadowStride','uShadowStride'],['density','uDensityScale'],['noiseScale','uNoiseScale'],['softness','uSoftness'],['erosion','uErosion'],['extinction','uExtinction'],['shadowStrength','uShadowStrength'],['lightIntensity','uLightIntensity'],['lightFalloff','uLightFalloff'],['viewScale','uViewScale'],['volumeDepth','uVolumeDepth'],['shapeRadius','uShapeRadius']])gl.uniform1f(this.uniforms[name],this.options[key]);
   for(const key of ['windDirection','lightDirection','offset','scale'])gl.uniform3fv(this.uniforms['u'+key[0].toUpperCase()+key.slice(1)],this.options[key]);
   for(const {value,location}of Object.values(this.customUniforms))if(Array.isArray(value))gl['uniform'+value.length+'fv'](location,value);else gl.uniform1f(location,value);
   gl.uniform1i(this.uniforms.uPreset,Object.keys(CloudPresets).indexOf(this.options.preset));
@@ -1243,17 +1286,70 @@ class CloudScene {
   gl.uniform3fv(this.uniforms.uCloudColor,rgb(this.options.cloudColor));gl.uniform3fv(this.uniforms.uBackground,rgb(this.options.background));
   gl.activeTexture(gl.TEXTURE0);gl.bindTexture(gl.TEXTURE_3D,this.fieldTexture);gl.uniform1i(this.uniforms.uField,0);gl.uniform1i(this.uniforms.uHasField,this.hasField?1:0);gl.uniform3fv(this.uniforms.uExtent,this.extent);
   gl.uniform1fv(this.uniforms['uLightRadii[0]'],radii);gl.uniform4fv(this.uniforms['uLights[0]'],positions);gl.uniform3fv(this.uniforms['uLightColors[0]'],colors);gl.uniform4fv(this.uniforms['uBolts[0]'],starts);gl.uniform4fv(this.uniforms['uBoltEnds[0]'],ends);gl.uniform3fv(this.uniforms['uBoltColors[0]'],boltColors);gl.uniform1i(this.uniforms.uBoltCount,Math.min(32,segments.length));
+  return this.drawFrame(amortized,bands,time);
+ }
+ drawFrame(amortized,bands,time){
+  const gl=this.gl;
   // Never wait for the GPU: read only completed queries on later frames.
   const query=this.timer&&this.options.adaptiveQuality&&this.measurements.length<3?gl.createQuery():null;
   if(query)gl.beginQuery(this.timer.TIME_ELAPSED_EXT,query);
-  gl.drawArrays(gl.TRIANGLES,0,6);
+  if(amortized)this.drawBand(amortized,bands);
+  else{gl.bindFramebuffer(gl.FRAMEBUFFER,null);gl.drawArrays(gl.TRIANGLES,0,6);}
   if(query){gl.endQuery(this.timer.TIME_ELAPSED_EXT);this.measurements.push(query);}
   this.options.onFrame?.({time,width:this.canvas.width,height:this.canvas.height,lightning:this.lightning.getState()});return true;
  }
- destroy(){if(this.destroyed)return;this.stop();this.destroyed=true;this.events.abort();this.observer?.disconnect();this.lightning.clear();for(const query of this.measurements)this.gl.deleteQuery(query);this.measurements.length=0;this.gl.deleteTexture(this.fieldTexture);this.gl.deleteBuffer(this.buffer);this.gl.deleteProgram(this.program);}
+ // Three canvas-sized targets: the previous and next finished cloud frames, and the one being drawn.
+ amortizedTargets(){
+  const gl=this.gl,width=this.canvas.width,height=this.canvas.height;
+  if(this.amortized?.width===width&&this.amortized.height===height)return this.amortized;
+  this.releaseAmortized();
+  if(!this.presentProgram){
+   const program=gl.createProgram(),vs=this.compile(gl.VERTEX_SHADER,vertex),fs=this.compile(gl.FRAGMENT_SHADER,presentFragment);
+   gl.attachShader(program,vs);gl.attachShader(program,fs);gl.bindAttribLocation(program,this.position,'aPosition');gl.linkProgram(program);gl.deleteShader(vs);gl.deleteShader(fs);
+   if(!gl.getProgramParameter(program,gl.LINK_STATUS))throw new Error(gl.getProgramInfoLog(program));
+   this.presentProgram=program;this.presentMix=gl.getUniformLocation(program,'uMix');
+   gl.useProgram(program);gl.uniform1i(gl.getUniformLocation(program,'uPrev'),1);gl.uniform1i(gl.getUniformLocation(program,'uNext'),2);
+  }
+  const target=()=>{
+   const texture=gl.createTexture();gl.bindTexture(gl.TEXTURE_2D,texture);
+   for(const key of [gl.TEXTURE_MIN_FILTER,gl.TEXTURE_MAG_FILTER])gl.texParameteri(gl.TEXTURE_2D,key,gl.NEAREST);
+   for(const key of [gl.TEXTURE_WRAP_S,gl.TEXTURE_WRAP_T])gl.texParameteri(gl.TEXTURE_2D,key,gl.CLAMP_TO_EDGE);
+   gl.texImage2D(gl.TEXTURE_2D,0,gl.RGBA8,width,height,0,gl.RGBA,gl.UNSIGNED_BYTE,null);
+   const framebuffer=gl.createFramebuffer();gl.bindFramebuffer(gl.FRAMEBUFFER,framebuffer);gl.framebufferTexture2D(gl.FRAMEBUFFER,gl.COLOR_ATTACHMENT0,gl.TEXTURE_2D,texture,0);
+   return {texture,framebuffer};
+  };
+  gl.bindFramebuffer(gl.FRAMEBUFFER,null);
+  this.amortized={width,height,targets:[target(),target(),target()],prev:0,next:1,work:2,band:0,ready:false};
+  gl.bindFramebuffer(gl.FRAMEBUFFER,null);gl.useProgram(this.program);
+  return this.amortized;
+ }
+ drawBand(a,bands){
+  const gl=this.gl,rows=Math.ceil(a.height/bands),count=Math.ceil(a.height/rows),fill=(target,from,to)=>{
+   gl.bindFramebuffer(gl.FRAMEBUFFER,a.targets[target].framebuffer);gl.viewport(0,0,a.width,a.height);gl.enable(gl.SCISSOR_TEST);gl.scissor(0,from,a.width,to-from);
+   gl.drawArrays(gl.TRIANGLES,0,6);gl.disable(gl.SCISSOR_TEST);
+  };
+  if(!a.ready){fill(a.next,0,a.height);a.prev=a.next;a.work=[0,1,2].find(i=>i!==a.next);a.band=0;a.ready=true;}
+  else{
+   const from=a.band*rows,to=Math.min(a.height,from+rows);
+   fill(a.work,from,to);a.band++;
+   if(to>=a.height){const done=a.work;a.prev=a.next;a.next=done;a.work=[0,1,2].find(i=>i!==a.prev&&i!==a.next);a.band=0;}
+  }
+  // Show prev → next by the share of the cloud frame in progress: when it finishes, the old next becomes prev at 0.
+  gl.bindFramebuffer(gl.FRAMEBUFFER,null);gl.useProgram(this.presentProgram);
+  gl.activeTexture(gl.TEXTURE1);gl.bindTexture(gl.TEXTURE_2D,a.targets[a.prev].texture);
+  gl.activeTexture(gl.TEXTURE2);gl.bindTexture(gl.TEXTURE_2D,a.targets[a.next].texture);
+  gl.uniform1f(this.presentMix,a.band/count);gl.drawArrays(gl.TRIANGLES,0,6);
+  gl.activeTexture(gl.TEXTURE0);gl.useProgram(this.program);
+ }
+ releaseAmortized(){
+  if(!this.amortized)return;
+  for(const {texture,framebuffer}of this.amortized.targets){this.gl.deleteFramebuffer(framebuffer);this.gl.deleteTexture(texture);}
+  this.amortized=null;
+ }
+ destroy(){if(this.destroyed)return;this.stop();this.destroyed=true;this.events.abort();this.observer?.disconnect();this.lightning.clear();for(const query of this.measurements)this.gl.deleteQuery(query);this.measurements.length=0;this.releaseAmortized();if(this.presentProgram)this.gl.deleteProgram(this.presentProgram);this.gl.deleteTexture(this.fieldTexture);this.gl.deleteBuffer(this.buffer);this.gl.deleteProgram(this.program);}
 }
 CloudScene.createFragmentShader=customFragment;
-CloudScene.vertexShader=vertex;CloudScene.fragmentShader=fragment;
+CloudScene.vertexShader=vertex;CloudScene.fragmentShader=fragment;CloudScene.presentFragmentShader=presentFragment;
 class StormClouds extends CloudScene {
  constructor(canvas,options={}){super(canvas,{preset:'storm',...options});}
 }
