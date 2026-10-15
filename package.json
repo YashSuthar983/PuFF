@@ -1,6 +1,6 @@
 {
   "name": "@yashsuthar/cloud-kit",
-  "version": "0.3.2",
+  "version": "0.3.3",
   "private": true,
   "type": "module",
   "description": "Interactive volumetric clouds, cloud text, and internal lightning for the browser.",
