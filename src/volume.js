@@ -1,6 +1,5 @@
 import { CloudControls } from './config.js';
 /* Continuous vapor advection and sunlit volumetric cloud rendering. */
-'use strict';
   const vertex = `#version 300 es
   in vec2 aPosition;
   void main() { gl_Position = vec4(aPosition, 0.0, 1.0); }`;
@@ -57,6 +56,7 @@ import { CloudControls } from './config.js';
     vec3 m=texture(uDensity,uv).rgb;
     return max(m.r,(m.g+m.b)*1.1);
   }
+  vec3 directionOf(vec3 v) { return v/max(length(v),.0001); }
   float vapor(vec3 p) {
     float r = uRadius;
     vec3 q = p / r;
@@ -84,9 +84,12 @@ import { CloudControls } from './config.js';
     float veil = max(0.0,(m-.22)*.7-q.z*q.z*.22+turbulence*.14);
     veil *= smoothstep(.1,.4,m)*.12;
     // Detached vapor has thin, broken edges instead of the solid body of a letter.
-    float wisps = noise(q * vec3(2.0, 3.8, 2.7) + drift*1.8 + vec3(12,4,9));
-    float loose = max(0.0, matter.g * (1.55 + turbulence*.35) - q.z*q.z*.65);
-    loose *= smoothstep(.005,.11,matter.g)*(.24 + .24*wisps);
+    float loose = 0.0;
+    if (matter.g > .005) {
+      float wisps = noise(q * vec3(2.0, 3.8, 2.7) + drift*1.8 + vec3(12,4,9));
+      loose = max(0.0, matter.g * (1.55 + turbulence*.35) - q.z*q.z*.65);
+      loose *= smoothstep(.005,.11,matter.g)*(.24 + .24*wisps);
+    }
     // Tap vapor is material lifted from the letters, rendered as a broad,
     // translucent wake. Its scale stays airy even on small body text.
     float lifted = 0.0;
@@ -101,7 +104,7 @@ import { CloudControls } from './config.js';
   vec2 shadowAt(vec3 p,vec3 direction,float beam){
     float sun=vapor(p+direction*uRadius*.38)*.38+vapor(p+direction*uRadius*.83)*.45+vapor(p+direction*uRadius*1.4)*.52;
     float point=0.0;
-    if(beam>.001){vec3 lampDirection=normalize(uPointLight-p);point=vapor(p)*.35+vapor(p+lampDirection*uRadius*.95)*1.4;}
+    if(beam>.001){vec3 lampDirection=directionOf(uPointLight-p);point=vapor(p)*.35+vapor(p+lampDirection*uRadius*.95)*1.4;}
     return vec2(sun,point);
   }
   void main() {
@@ -113,10 +116,10 @@ import { CloudControls } from './config.js';
     float r = uRadius;
     float stepSize = r * 4.4 / uMarchSteps;
     float transmittance = 1.0;
-    vec3 lightDirection = normalize(uLightDirection);
+    vec3 lightDirection = directionOf(uLightDirection);
     float beam = 0.0;
+    float reach = max(1.0,uPointReach);
     if (uPointPower > .001) {
-      float reach = max(1.0,uPointReach);
       beam = (1.0-smoothstep(reach*.15,reach,length(xy-uPointLight.xy)))*uPointPower;
     }
     vec2 fieldGradient=vec2(0);
@@ -158,13 +161,13 @@ import { CloudControls } from './config.js';
           gradient+=billowGradient(p/r*1.35+drift)*(1.36*uDetailScale/r);
           vec3 normal=normalize(-gradient+vec3(0,0,.001));
           vec3 toLight=uPointLight-p;
-          vec3 lampDirection=normalize(toLight);
+          vec3 lampDirection=directionOf(toLight);
           // Vapor scatters light around its billows instead of reflecting it
           // like a polished solid. Sample optical depth toward the actual lamp,
           // and let scattered light softly fill sheltered parts of the cloud.
           float diffuse=.5+.5*dot(normal,lampDirection);
           float visibility=exp(-shadow.y*.85);
-          float falloff=1.0/(1.0+dot(toLight,toLight)/(uPointReach*uPointReach));
+          float falloff=1.0/(1.0+dot(toLight,toLight)/(reach*reach));
           float scatteredFill=.2*exp(-shadow.y*.45);
           float rim=pow(1.0-abs(normal.z),2.0)*visibility*.08;
           vec3 lamp=mix(uLit,uPointColor,.9);
@@ -186,10 +189,27 @@ import { CloudControls } from './config.js';
   }`;
 
 // Per-mask simulation state is isolated; programs and staging buffers are shared.
-const layerKeys=['width','height','cell','gw','gh','radius','target','field','loose','nextLoose','advected','tapVapor','nextTapVapor','advectedTapVapor','tapRemaining','windColumns','windRows','windDiagonals','recovery','brushWeights','vx','vy','bytes','gustSpeed','gustAge','frameAverage','frames','quality','dirty','lastTheme','texture','formationTexture','options','outputWidth','outputHeight','puffs','time'];
+const layerKeys=['width','height','cell','gw','gh','radius','target','field','loose','nextLoose','advected','tapVapor','nextTapVapor','advectedTapVapor','tapRemaining','windColumns','windRows','windDiagonals','recovery','brushDistances','brushIndices','vx','vy','bytes','gustSpeed','frameAverage','frames','quality','dirty','densityDirty','settled','lastRecoveryRate','texture','formationTexture','options','outputWidth','outputHeight','puffs','time'];
+function validateTime(dt){if(!Number.isFinite(dt)||dt<0)throw new TypeError('dt must be a finite, nonnegative time in seconds.');}
+function validateOptions(options){
+ for(const key of ['gridSize','minCell','minRadius','radiusFactor','renderWidth','renderHeight','raySteps','shadowStride'])if(options[key]!==undefined&&(!Number.isFinite(options[key])||options[key]<=0))throw new TypeError(key+' must be finite and positive.');
+ for(const key of ['detailScale','edgeFadeTop','edgeFadeBottom'])if(options[key]!==undefined&&(!Number.isFinite(options[key])||options[key]<0))throw new TypeError(key+' must be finite and nonnegative.');
+}
+function validatePointer(pointer){
+ if(!pointer||typeof pointer!=='object')throw new TypeError('Expected a cloud pointer.');
+ for(const key of ['x','y','vx','vy'])if(pointer[key]!==undefined&&!Number.isFinite(pointer[key]))throw new TypeError('Pointer '+key+' must be finite.');
+ if(pointer.segments!==undefined){
+  if(!Array.isArray(pointer.segments))throw new TypeError('Pointer segments must be an array.');
+  for(const segment of pointer.segments)if(!segment||!['ax','ay','bx','by'].every(key=>Number.isFinite(segment[key])))throw new TypeError('Sweep endpoints must be finite.');
+ }
+ if(pointer.effects!==undefined){
+  if(!Array.isArray(pointer.effects))throw new TypeError('Pointer effects must be an array.');
+  for(const effect of pointer.effects)if(!effect||!['puff','stir'].includes(effect.kind)||!Number.isFinite(effect.x)||!Number.isFinite(effect.y)||effect.strength!==undefined&&!Number.isFinite(effect.strength))throw new TypeError('Expected a finite puff or stir effect.');
+ }
+}
 export class CloudVolume {
     constructor(options = {}) {
-      this.options = options;
+      validateOptions(options);this.options = {...options};
       this.layers=new Map();
       this.physics=Object.fromEntries(Object.entries(CloudControls.volume).map(([key,value])=>[key,value.default]));
       this.configure(options.physics||{});
@@ -199,15 +219,17 @@ export class CloudVolume {
       this.gl = gl;
       const compile = (type, source) => {
         const shader = gl.createShader(type); gl.shaderSource(shader, source); gl.compileShader(shader);
-        if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(shader));
+        if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {const message=gl.getShaderInfoLog(shader);gl.deleteShader(shader);throw new Error(message);}
         return shader;
       };
       this.program = gl.createProgram();
-      const vs=compile(gl.VERTEX_SHADER,vertex),fs=compile(gl.FRAGMENT_SHADER,fragment);
-      gl.attachShader(this.program,vs);gl.attachShader(this.program,fs);
-      gl.linkProgram(this.program);
-      gl.deleteShader(vs);gl.deleteShader(fs);
-      if (!gl.getProgramParameter(this.program, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(this.program));
+      let vs,fs;
+      try{
+        vs=compile(gl.VERTEX_SHADER,vertex);fs=compile(gl.FRAGMENT_SHADER,fragment);
+        gl.attachShader(this.program,vs);gl.attachShader(this.program,fs);gl.linkProgram(this.program);
+        if (!gl.getProgramParameter(this.program, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(this.program));
+      }catch(error){gl.deleteProgram(this.program);throw error;}
+      finally{if(vs)gl.deleteShader(vs);if(fs)gl.deleteShader(fs);}
       gl.useProgram(this.program);
       const buffer = this.buffer=gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
       gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1,-1, 1,-1, -1,1, -1,1, 1,-1, 1,1]), gl.STATIC_DRAW);
@@ -230,20 +252,21 @@ export class CloudVolume {
       gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_T,gl.CLAMP_TO_EDGE);
       gl.texImage2D(gl.TEXTURE_2D,0,gl.R8,1,1,0,gl.RED,gl.UNSIGNED_BYTE,new Uint8Array([255]));
       gl.activeTexture(gl.TEXTURE0);gl.bindTexture(gl.TEXTURE_2D,this.texture);
-      this.gustSpeed = 0; this.gustAge = 10; this.time = 0; this.theme = '';
+      this.gustSpeed = 0; this.time = 0;
       this.trailStrength = 1;
     }
     configure(patch={}){
+      for(const [key,value]of Object.entries(patch))if(!Object.hasOwn(CloudControls.volume,key)||!Number.isFinite(Number(value)))throw new TypeError('Unknown or invalid cloud physics: '+key);
       for(const [key,value]of Object.entries(patch)){
         const control=CloudControls.volume[key];
-        if(!control||!Number.isFinite(Number(value)))throw new TypeError('Unknown or invalid cloud physics: '+key);
         this.physics[key]=Math.max(control.min,Math.min(control.max,Number(value)));
       }
       return this;
     }
     getOptions(){return JSON.parse(JSON.stringify({...this.options,physics:this.physics,trailStrength:this.trailStrength,vaporDensity:this.vaporDensity??1,airStrength:this.airStrength??1}));}
-    captureLayerState(){return Object.fromEntries(layerKeys.map(key=>[key,this[key]]));}
+    captureLayerState(state={}){for(const key of layerKeys)state[key]=this[key];return state;}
     createLayer(mask,{scale=100,puffiness=1,...options}={}){
+      validateOptions(options);
       if(this.destroyed)throw new Error('CloudVolume was destroyed.');
       if(!mask?.getContext||![mask.width,mask.height].every(n=>Number.isInteger(n)&&n>0)||!Number.isFinite(scale)||scale<=0||!Number.isFinite(puffiness)||puffiness<=0)throw new TypeError('Cloud layers require a non-empty canvas and positive scale/puffiness.');
       const saved=this.captureLayerState(),gl=this.gl;
@@ -254,7 +277,7 @@ export class CloudVolume {
         for(const key of [gl.TEXTURE_MIN_FILTER,gl.TEXTURE_MAG_FILTER])gl.texParameteri(gl.TEXTURE_2D,key,gl.LINEAR);
         for(const key of [gl.TEXTURE_WRAP_S,gl.TEXTURE_WRAP_T])gl.texParameteri(gl.TEXTURE_2D,key,gl.CLAMP_TO_EDGE);
         this.texture=texture;this.options={...saved.options,...options,sharedBuffer:true};
-        this.setFormation(mask,scale,puffiness,true);
+        this.setFormation(mask,scale,puffiness);
         formationTexture=gl.createTexture();gl.activeTexture(gl.TEXTURE1);gl.bindTexture(gl.TEXTURE_2D,formationTexture);
         for(const key of [gl.TEXTURE_MIN_FILTER,gl.TEXTURE_MAG_FILTER])gl.texParameteri(gl.TEXTURE_2D,key,gl.LINEAR);
         for(const key of [gl.TEXTURE_WRAP_S,gl.TEXTURE_WRAP_T])gl.texParameteri(gl.TEXTURE_2D,key,gl.CLAMP_TO_EDGE);
@@ -265,7 +288,8 @@ export class CloudVolume {
       }catch(error){if(texture)gl.deleteTexture(texture);if(formationTexture)gl.deleteTexture(formationTexture);throw error;}
       finally{Object.assign(this,saved);gl.activeTexture(gl.TEXTURE0);gl.bindTexture(gl.TEXTURE_2D,this.texture);}
     }
-    renderLayer(layer,dt,paused,pointer,{formation=1,frameMs=16.667,simulate=true,renderScale=1}={}){
+    renderLayer(layer,dt,paused,pointer,{formation=1,simulate=true,renderScale=1}={}){
+      validateTime(dt);
       if(!Number.isFinite(formation)||!Number.isFinite(renderScale))throw new TypeError('Formation and render scale must be finite.');
       const record=this.layers.get(layer);if(!record||this.destroyed)throw new Error('Unknown or released cloud layer.');
       const saved=this.captureLayerState(),gl=this.gl;
@@ -277,45 +301,48 @@ export class CloudVolume {
         const value=Math.round(Math.max(0,Math.min(1,formation))*255);
         if(value!==record.formation){gl.activeTexture(gl.TEXTURE1);gl.bindTexture(gl.TEXTURE_2D,this.formationTexture);gl.texSubImage2D(gl.TEXTURE_2D,0,0,0,1,1,gl.RED,gl.UNSIGNED_BYTE,new Uint8Array([value]));record.formation=value;}
         gl.activeTexture(gl.TEXTURE0);gl.bindTexture(gl.TEXTURE_2D,this.texture);this.dirty=true;
-        if(record.densityDirty){this.upload();record.densityDirty=false;}
         if(!paused&&!simulate)this.time+=dt;
-        const rendered=this.render(simulate?dt:0,paused||!simulate,pointer,frameMs);
-        record.state=this.captureLayerState();
-        return {rendered,canvas:this.canvas,x:0,y:this.canvas.height-this.outputHeight,width:this.outputWidth,height:this.outputHeight};
+        const rendered=this.render(simulate?dt:0,paused||!simulate,pointer);
+        this.captureLayerState(record.state);
+        return {rendered,settled:this.settled,canvas:this.canvas,x:0,y:this.canvas.height-this.outputHeight,width:this.outputWidth,height:this.outputHeight};
       }finally{Object.assign(this,saved);gl.activeTexture(gl.TEXTURE0);gl.bindTexture(gl.TEXTURE_2D,this.texture);}
     }
     gustLayer(layer,strength=1){
       const record=this.layers.get(layer);if(!record)throw new Error('Unknown or released cloud layer.');
-      const saved=this.captureLayerState();try{Object.assign(this,record.state);this.gust(strength);record.state=this.captureLayerState();}finally{Object.assign(this,saved);}
+      const saved=this.captureLayerState();try{Object.assign(this,record.state);this.gust(strength);this.captureLayerState(record.state);}finally{Object.assign(this,saved);}
     }
     recoverLayer(layer,elapsed){
       const record=this.layers.get(layer);if(!record)throw new Error('Unknown or released cloud layer.');
       if(!Number.isFinite(elapsed)||elapsed<0)throw new TypeError('Recovery elapsed time must be finite and nonnegative.');
-      const state=record.state,amount=1-Math.exp(-elapsed*this.physics.recoveryRate),fade=Math.exp(-elapsed*this.physics.vaporDissipation),velocityFade=Math.exp(-elapsed*4);
+      const state=record.state,amount=1-Math.exp(-elapsed*this.physics.recoveryRate),fade=Math.exp(-elapsed*this.physics.vaporDissipation),velocityFade=Math.exp(-elapsed*1.35);
       // One relaxation pass, rather than replaying thousands of hidden frames.
       for(let i=0;i<state.field.length;i++){
-        state.field[i]+=(state.target[i]-state.field[i])*amount;state.loose[i]*=fade;
+        const recoveryTime=Math.max(0,elapsed-state.recovery[i]);
+        const recoveryAmount=recoveryTime===elapsed?amount:recoveryTime>0?1-Math.exp(-recoveryTime*this.physics.recoveryRate):0;
+        state.field[i]+=(state.target[i]-state.field[i])*recoveryAmount;state.loose[i]*=fade;
         if(state.tapVapor)state.tapVapor[i]*=fade;
         state.vx[i]*=velocityFade;state.vy[i]*=velocityFade;state.recovery[i]=Math.max(0,state.recovery[i]-elapsed);
       }
-      state.gustSpeed*=Math.exp(-elapsed*1.1);state.gustAge+=elapsed;state.time+=elapsed;
+      state.gustSpeed*=Math.exp(-elapsed*1.1);state.time+=elapsed;
       state.tapRemaining=Math.max(0,state.tapRemaining-elapsed);if(!state.tapRemaining)state.tapVapor=state.nextTapVapor=state.advectedTapVapor=null;
       state.puffs=(state.puffs||[]).map(p=>({...p,age:p.age+elapsed,idle:p.idle+elapsed,remaining:p.remaining*Math.exp(-elapsed*5)})).filter(p=>p.idle<this.physics.puffDuration);
-      record.densityDirty=true;
+      state.densityDirty=state.dirty=true;state.settled=false;
     }
     releaseLayer(layer){
       const record=this.layers.get(layer);if(!record)return;
       this.gl.deleteTexture(record.state.texture);this.gl.deleteTexture(record.state.formationTexture);this.layers.delete(layer);
     }
     setMask(mask,{scale=100,puffiness=1}={}) {
-      this.setFormation(mask,scale,puffiness,true);return this;
+      this.setFormation(mask,scale,puffiness);return this;
     }
-    setFormation(mask,fontSize,puffiness,instant) {
+    setFormation(mask,fontSize,puffiness) {
+      if(this.destroyed)throw new Error('CloudVolume was destroyed.');
+      validateOptions(this.options);
+      if(!mask?.getContext||![mask.width,mask.height].every(n=>Number.isInteger(n)&&n>0)||!Number.isFinite(fontSize)||fontSize<=0||!Number.isFinite(puffiness)||puffiness<=0)throw new TypeError('Cloud masks require a non-empty canvas and positive scale/puffiness.');
       this.width = mask.width; this.height = mask.height;
       const gridSize=this.options.gridSize || 360;
       this.cell = Math.max(this.options.minCell || 2.3,this.width/gridSize,this.height/gridSize);
       const gw = Math.ceil(this.width/this.cell), gh = Math.ceil(this.height/this.cell);
-      const changed = gw !== this.gw || gh !== this.gh;
       this.gw=gw; this.gh=gh;
       const n=gw*gh, pixels=mask.getContext('2d').getImageData(0,0,this.width,this.height).data;
       const inside=new Uint8Array(n);
@@ -348,14 +375,14 @@ export class CloudVolume {
       this.radius=Math.max(this.options.minRadius || 7,fontSize*(this.options.radiusFactor || .105))*puffiness;
       this.target=new Float32Array(n);
       for(let i=0;i<n;i++) this.target[i]=Math.max(0,Math.min(1,.68-(outer[i]-inner[i])*this.cell/(this.radius*2.7)));
-      if(changed||instant||!this.field) this.field=this.target.slice();
+      this.field=this.target.slice();
       this.loose=new Float32Array(n);this.nextLoose=new Float32Array(n);this.advected=new Float32Array(n);
       this.tapVapor=this.nextTapVapor=this.advectedTapVapor=null;this.tapRemaining=0;
       this.windColumns=new Float32Array(gw);this.windRows=new Float32Array(gh);this.windDiagonals=new Float32Array(gw+gh);
-      this.recovery=new Float32Array(n);this.brushWeights=new Float32Array(n);
+      this.recovery=new Float32Array(n);this.brushDistances=this.brushIndices=null;
       this.vx=new Float32Array(n);this.vy=new Float32Array(n);this.bytes=new Uint8Array(n*3);
       this.puffs=[];
-      this.gustSpeed=0;this.gustAge=10;
+      this.gustSpeed=0;
       const resolution=Math.min(1,(this.options.renderWidth || 800)/this.width,(this.options.renderHeight || 650)/this.height);
       this.outputWidth=Math.max(1,Math.round(this.width*resolution));
       this.outputHeight=Math.max(1,Math.round(this.height*resolution));
@@ -363,8 +390,9 @@ export class CloudVolume {
         this.canvas.width=this.outputWidth;this.canvas.height=this.outputHeight;
       }
       const gl=this.gl;
+      gl.activeTexture(gl.TEXTURE0);gl.bindTexture(gl.TEXTURE_2D,this.texture);
       gl.texImage2D(gl.TEXTURE_2D,0,gl.RGB8,gw,gh,0,gl.RGB,gl.UNSIGNED_BYTE,null);
-      this.frameAverage=16.667;this.frames=0;this.quality=resolution;this.dirty=true;
+      this.frameAverage=16.667;this.frames=0;this.quality=resolution;this.dirty=true;this.settled=true;this.lastRecoveryRate=this.physics.recoveryRate;
       this.upload();
     }
     upload() {
@@ -373,18 +401,23 @@ export class CloudVolume {
         this.bytes[i*3+1]=Math.round(Math.max(0,Math.min(1,this.loose[i]))*255);
         this.bytes[i*3+2]=this.tapVapor?Math.round(Math.max(0,Math.min(1,this.tapVapor[i]))*255):0;
       }
-      this.gl.texSubImage2D(this.gl.TEXTURE_2D,0,0,0,this.gw,this.gh,this.gl.RGB,this.gl.UNSIGNED_BYTE,this.bytes);
+      this.gl.activeTexture(this.gl.TEXTURE0);this.gl.bindTexture(this.gl.TEXTURE_2D,this.texture);
+      this.gl.texSubImage2D(this.gl.TEXTURE_2D,0,0,0,this.gw,this.gh,this.gl.RGB,this.gl.UNSIGNED_BYTE,this.bytes);this.densityDirty=false;
     }
     gust(strength=1) {
+      if(!Number.isFinite(strength))throw new TypeError('Gust strength must be finite.');
       strength=Math.max(0,Math.min(2,strength));if(strength===0)return;
-      this.gustSpeed=260*strength;this.gustAge=0;
+      if(!this.field)return;
+      this.dirty=this.densityDirty=true;this.settled=false;
+      this.gustSpeed=260*strength;
       for(let i=0;i<this.field.length;i++) {
         this.loose[i]=Math.min(1,this.loose[i]+this.field[i]*Math.min(.95,.82*strength));
         this.field[i]*=Math.max(.04,1-.92*strength);this.recovery[i]=1.8*strength;
       }
     }
     simulate(dt,pointer) {
-      if(pointer.effects?.some(effect=>effect.kind==='puff'&&(effect.strength??1)>0)){
+      const inputs=pointer.effects?.slice(-8)||[],segments=pointer.segments?.slice(-64)||[];
+      if(inputs.some(effect=>effect.kind==='puff'&&(effect.strength??1)>0)){
         if(!this.tapVapor){
           this.tapVapor=new Float32Array(this.gw*this.gh);
           this.nextTapVapor=new Float32Array(this.gw*this.gh);
@@ -394,29 +427,35 @@ export class CloudVolume {
       }
       this.tapRemaining=Math.max(0,this.tapRemaining-dt);
       if(this.tapRemaining===0)this.tapVapor=this.nextTapVapor=this.advectedTapVapor=null;
-      const {gw,gh,cell,vx,vy,field,loose,nextLoose,advected,tapVapor,nextTapVapor,advectedTapVapor,target,recovery,brushWeights}=this;
-      this.gustAge+=dt;this.gustSpeed*=Math.exp(-dt*1.1);
-      const speed=Math.hypot(pointer.vx||0,pointer.vy||0);
+      const {gw,gh,cell,vx,vy,field,loose,nextLoose,advected,tapVapor,nextTapVapor,advectedTapVapor,target,recovery}=this;
+      this.gustSpeed*=Math.exp(-dt*1.1);
+      let velocityX=pointer.vx||0,velocityY=pointer.vy||0,pathLength=0;
+      for(const segment of segments)pathLength+=Math.hypot(segment.bx-segment.ax,segment.by-segment.ay);
+      if(!Math.hypot(velocityX,velocityY))for(let i=segments.length-1;i>=0;i--){
+        velocityX=(segments[i].bx-segments[i].ax)/dt;velocityY=(segments[i].by-segments[i].ay)/dt;
+        if(Math.hypot(velocityX,velocityY))break;
+      }
+      const velocitySpeed=Math.hypot(velocityX,velocityY),speed=Math.max(velocitySpeed,pathLength/dt);
       const motion=Math.min(1,speed/420);
       const strength=Math.max(0,Math.min(2,this.trailStrength));
-      const breeze=this.environmentWind||{x:0,y:0,strength:0};
+      const breeze=this.environmentWind?.strength>0?this.environmentWind:{x:0,y:0,strength:0};
       const windRelease=Math.min(.008,Math.max(0,breeze.strength)*dt*.075);
       // Each tap refills a bounded emission budget and refreshes the breeze.
       // Released material keeps its own motion and fade; taps never stack mass.
       const effects=[];
-      for(const effect of pointer.effects||[]){
+      for(const effect of inputs){
+        const gain=Math.max(0,Math.min(2,effect.strength??1));if(gain===0)continue;
         if(effect.kind==='puff'){
-          if(!(effect.strength??1))continue;
           this.puffs??=[];
           const existing=this.puffs.find(p=>Math.hypot(p.x-effect.x,p.y-effect.y)<60);
           if(existing){
-            existing.strength=Math.max(existing.strength,effect.strength??1);
-            existing.boost=Math.min(1.1,(existing.boost||0)+.3*(effect.strength??1));
-            existing.remaining=Math.min(.4,existing.remaining+.26*(effect.strength??1));
+            existing.strength=Math.max(existing.strength,gain);
+            existing.boost=Math.min(1.1,(existing.boost||0)+.3*gain);
+            existing.remaining=Math.min(.4,existing.remaining+.26*gain);
             existing.idle=0;
           }
-          else{if(this.puffs.length>=8)this.puffs.shift();this.puffs.push({...effect,age:0,idle:0,remaining:.26*(effect.strength??1)});}
-        }else effects.push(effect);
+          else{if(this.puffs.length>=8)this.puffs.shift();this.puffs.push({kind:'puff',x:effect.x,y:effect.y,strength:gain,age:0,idle:0,remaining:.26*gain});}
+        }else effects.push({kind:'stir',x:effect.x,y:effect.y,strength:gain});
       }
       const smooth=t=>t*t*(3-2*t);
       for(const puff of this.puffs||[]){
@@ -425,14 +464,14 @@ export class CloudVolume {
         const arrival=smooth(Math.max(0,Math.min(1,(puff.age-.06)/.45)));
         const amount=puff.remaining*(1-Math.exp(-dt*5))*arrival;
         puff.remaining=Math.max(0,puff.remaining-amount);
-        if(amount>0)effects.push({...puff,amount});
+        if(amount>0)effects.push({kind:'puff',x:puff.x,y:puff.y,strength:puff.strength,amount});
       }
       this.puffs=(this.puffs||[]).filter(puff=>puff.idle<this.physics.puffDuration);
       // Holds rotate the local flow; taps release a gradually growing air puff.
       for(const effect of effects){
         const gain=Math.max(0,Math.min(2,effect.strength??1));if(gain===0)continue;
         const reach=Math.max(36,Math.min(76,this.radius*2.8+30))*(.85+.15*gain);
-        const amount=effect.kind==='stir'?Math.min(.08,dt*.4*gain):effect.amount;
+        const swirl=effect.kind==='stir',amount=swirl?Math.min(.08,dt*.4*gain):effect.amount;
         const left=Math.max(0,Math.floor((effect.x-reach*1.7)/cell));
         const right=Math.min(gw-1,Math.ceil((effect.x+reach*1.7)/cell));
         const top=Math.max(0,Math.floor((effect.y-reach*1.7)/cell));
@@ -441,15 +480,14 @@ export class CloudVolume {
           const dx=(x+.5)*cell-effect.x,dy=(y+.5)*cell-effect.y;
           const weight=Math.exp(-(dx*dx+dy*dy)/(reach*reach*.42));
           if(weight<.004)continue;
-          const swirl=effect.kind==='stir';
           const i=y*gw+x,floor=target[i]*(swirl?.5:this.physics.tapRetention);
           const capacity=swirl?1:Math.max(0,this.physics.tapCapacity-tapVapor[i]);
           const removed=Math.max(0,Math.min(field[i]-floor,(swirl?field[i]:target[i])*amount*weight,capacity));
           field[i]-=removed;
           if(swirl){
             loose[i]=Math.min(1,loose[i]+removed*.75);
-            vx[i]+=(-dy/reach*85)*weight*gain;
-            vy[i]+=(dx/reach*85-20)*weight*gain;
+            vx[i]+=(-dy/reach*85)*weight*gain*dt*30;
+            vy[i]+=(dx/reach*85-20)*weight*gain*dt*30;
             vx[i]=Math.max(-180,Math.min(180,vx[i]));vy[i]=Math.max(-180,Math.min(180,vy[i]));
           }else tapVapor[i]+=removed;
           // Tap weather can replenish while the finger keeps tapping. A hold
@@ -457,52 +495,68 @@ export class CloudVolume {
           if(removed>0&&swirl)recovery[i]=Math.max(recovery[i],.9);
         }
       }
-      if(pointer.active&&motion>.015&&strength>0&&pointer.segments?.length) {
-        const dragging=pointer.down||pointer.segments.some(segment=>segment.down);
+      if(motion>.015&&strength>0&&segments.length) {
+        const dragging=pointer.down||segments.some(segment=>segment.down);
         // Sweep the complete pointer path, so fast strokes do not skip over vapor.
         const reach=Math.max(27,Math.min(66,this.radius*1.4))*(dragging?1.35:1)*this.physics.brushSize;
-        const visited=[];brushWeights.fill(0);
-        for(const segment of pointer.segments) {
+        // Retain double-precision distances; round only after the Gaussian.
+        if(!this.brushDistances){this.brushDistances=new Float64Array(gw*gh).fill(Infinity);this.brushIndices=new Uint32Array(gw*gh);}
+        const distances=this.brushDistances,indices=this.brushIndices;let visited=0;
+        const radiusSquared=reach*reach*.48,cutoff=-Math.log(.004)*radiusSquared;
+        for(const segment of segments) {
           const {ax,ay,bx,by}=segment,sx=bx-ax,sy=by-ay,length2=sx*sx+sy*sy;
           const left=Math.max(0,Math.floor((Math.min(ax,bx)-reach*1.7)/cell));
           const right=Math.min(gw-1,Math.ceil((Math.max(ax,bx)+reach*1.7)/cell));
           const top=Math.max(0,Math.floor((Math.min(ay,by)-reach*1.7)/cell));
           const bottom=Math.min(gh-1,Math.ceil((Math.max(ay,by)+reach*1.7)/cell));
-          for(let y=top;y<=bottom;y++) for(let x=left;x<=right;x++) {
-            const px=(x+.5)*cell,py=(y+.5)*cell;
+          for(let y=top;y<=bottom;y++){
+           const py=(y+.5)*cell;
+           // Restrict each row to the stroke's band instead of scanning a diagonal's entire bounding box.
+           const ta=sy?Math.max(0,Math.min(1,(py-reach*1.7-ay)/sy)):0;
+           const tb=sy?Math.max(0,Math.min(1,(py+reach*1.7-ay)/sy)):1;
+           const xa=ax+sx*ta,xb=ax+sx*tb;
+           const rowLeft=Math.max(left,Math.floor((Math.min(xa,xb)-reach*1.7)/cell));
+           const rowRight=Math.min(right,Math.ceil((Math.max(xa,xb)+reach*1.7)/cell));
+           for(let x=rowLeft;x<=rowRight;x++) {
+            const px=(x+.5)*cell;
             const t=length2?Math.max(0,Math.min(1,((px-ax)*sx+(py-ay)*sy)/length2)):0;
             const dx=px-(ax+sx*t),dy=py-(ay+sy*t);
-            const influence=Math.exp(-(dx*dx+dy*dy)/(reach*reach*.48));
-            if(influence<.004) continue;
+            const distanceSquared=dx*dx+dy*dy;
+            if(distanceSquared>cutoff)continue;
             const i=y*gw+x;
-            if(!brushWeights[i]) visited.push(i);
-            brushWeights[i]=Math.max(brushWeights[i],influence);
+            if(distanceSquared<distances[i]){
+             if(distances[i]===Infinity)indices[visited++]=i;
+             distances[i]=distanceSquared;
+            }
+           }
           }
         }
         const flow=Math.min(dragging?210:135,speed*(dragging?.23:.16))*Math.sqrt(strength);
         const weathering=.65+Math.min(2.35,speed/750);
-        const windX=pointer.vx/speed*flow+22,windY=pointer.vy/speed*flow-18;
-        for(const i of visited) {
-          const influence=brushWeights[i];
+        const windX=velocityX/Math.max(1,velocitySpeed)*flow+22,windY=velocityY/Math.max(1,velocitySpeed)*flow-18;
+        // A Gaussian decreases with distance: find the nearest segment first,
+        // then evaluate it once per touched cell. Reset only those cells.
+        for(let j=0;j<visited;j++) {
+          const i=indices[j],influence=Math.fround(Math.exp(-distances[i]/radiusSquared));distances[i]=Infinity;
           // Weather away attached cloud without transporting or compressing its letters.
-          const gathering=this.formationWeights?this.formationWeights[i]/255:1;
-          const removed=field[i]*(1-Math.exp(-influence*motion*weathering*this.physics.weathering*strength*gathering*dt*(dragging?9:6)));
+          const removed=field[i]*(1-Math.exp(-influence*motion*weathering*this.physics.weathering*strength*dt*(dragging?9:6)));
           field[i]-=removed;loose[i]=Math.min(1,loose[i]+removed*.62);
           if(influence*motion>.08) recovery[i]=Math.max(recovery[i],1.35+influence*.65);
           const blend=1-Math.exp(-influence*motion*dt*22);
           vx[i]+=(windX-vx[i])*blend;vy[i]+=(windY-vy[i])*blend;
         }
       }
-      const drag=Math.exp(-dt*1.35),fade=Math.exp(-dt*.95),tapFade=Math.exp(-dt*this.physics.vaporDissipation);
+      const drag=Math.exp(-dt*1.35),fade=Math.exp(-dt*this.physics.vaporDissipation),recoveryAmount=1-Math.exp(-dt*this.physics.recoveryRate);
       const breaths=(this.puffs||[]).map(p=>{
         const x=p.x+65*p.idle,y=p.y-72*p.idle;
         const reach=Math.max(48,Math.min(92,this.radius*2.8+38))+p.idle*24;
+        const speed=(.6+.4*Math.sin(Math.PI*Math.min(1,p.idle/this.physics.puffDuration)))*Math.sqrt(p.strength??1)*(1+(p.boost||0))*Math.max(0,Math.min(2,this.airStrength??1));
         p.airColumns??=new Float32Array(gw);p.airRows??=new Float32Array(gh);
-        // Separable Gaussian avoids evaluating an exponential per grid cell.
-        for(let i=0;i<gw;i++)p.airColumns[i]=Math.exp(-Math.pow(((i+.5)*cell-x)/reach,2));
-        for(let i=0;i<gh;i++)p.airRows[i]=Math.exp(-Math.pow(((i+.5)*cell-y)/reach,2));
-        return {x,y,reach,columns:p.airColumns,rows:p.airRows,
-          speed:(.6+.4*Math.sin(Math.PI*Math.min(1,p.idle/this.physics.puffDuration)))*Math.sqrt(p.strength??1)*(1+(p.boost||0))*Math.max(0,Math.min(2,this.airStrength??1))};
+        p.airXColumns??=new Float64Array(gw);p.airYRows??=new Float64Array(gh);
+        // Cache separable Gaussian and airflow factors for the cell loop.
+        for(let i=0;i<gw;i++){const dx=(i+.5)*cell-x;p.airColumns[i]=Math.exp(-Math.pow(dx/reach,2));p.airXColumns[i]=(95+dx/reach*38)*p.airColumns[i]*speed;}
+        for(let i=0;i<gh;i++){const dy=(i+.5)*cell-y;p.airRows[i]=Math.exp(-Math.pow(dy/reach,2));p.airYRows[i]=(-110+dy/reach*38)*p.airRows[i]*speed;}
+        return {columns:p.airColumns,rows:p.airRows,xFlow:p.airXColumns,yFlow:p.airYRows};
       });
       // Smooth, diverging directions fold the wake into wisps. The flow itself
       // is divergence-free, so it cannot squeeze released vapor into a ridge.
@@ -527,10 +581,8 @@ export class CloudVolume {
         if(tapVapor){
           let airX=0,airY=0;
           for(const breath of breaths){
-            const dx=(x+.5)*cell-breath.x,dy=(y+.5)*cell-breath.y;
-            const weight=breath.columns[x]*breath.rows[y];
-            airX+=(95+dx/breath.reach*38)*weight*breath.speed;
-            airY+=(-110+dy/breath.reach*38)*weight*breath.speed;
+            airX+=breath.xFlow[x]*breath.rows[y];
+            airY+=breath.columns[x]*breath.yFlow[y];
           }
           const tx=x-(18+this.windRows[y]+curl+(breeze.x||0)+airX)*dt/cell;
           const ty=y-(-14-this.windColumns[x]-curl+(breeze.y||0)+airY)*dt/cell;
@@ -546,13 +598,14 @@ export class CloudVolume {
           const removed=field[i]*windRelease;
           field[i]-=removed;advected[i]=Math.min(1,advected[i]+removed*.6);
         }
-        recovery[i]=Math.max(0,recovery[i]-dt);
+        const recoveryTime=Math.max(0,dt-recovery[i]);recovery[i]=Math.max(0,recovery[i]-dt);
         // Fresh cloud condenses in place after the wake clears; it never snaps back.
-        if(recovery[i]===0) field[i]+=(target[i]-field[i])*Math.min(.15,dt*this.physics.recoveryRate);
+        if(recoveryTime>0)field[i]+=(target[i]-field[i])*(recoveryTime===dt?recoveryAmount:1-Math.exp(-recoveryTime*this.physics.recoveryRate));
       }
       // Spread the transported vapor, rather than mixing it back into the old
       // stroke. A wider stencil gives the wake room to unravel on every screen.
       const spread=Math.max(1,Math.round(8/cell)),diffusion=1-Math.exp(-dt*6);
+      let settled=!this.puffs.length&&this.gustSpeed<.1;
       for(let y=0;y<gh;y++) for(let x=0;x<gw;x++) {
         const i=y*gw+x;
         const neighbors=((x>=spread?advected[i-spread]:0)+(x+spread<gw?advected[i+spread]:0)
@@ -561,18 +614,31 @@ export class CloudVolume {
         if(tapVapor){
           const airNeighbors=((x>=spread?advectedTapVapor[i-spread]:0)+(x+spread<gw?advectedTapVapor[i+spread]:0)
             +(y>=spread?advectedTapVapor[i-spread*gw]:0)+(y+spread<gh?advectedTapVapor[i+spread*gw]:0))*.25;
-          nextTapVapor[i]=(advectedTapVapor[i]+(airNeighbors-advectedTapVapor[i])*diffusion)*tapFade;
+          nextTapVapor[i]=(advectedTapVapor[i]+(airNeighbors-advectedTapVapor[i])*diffusion)*fade;
         }
+        if(settled&&(nextLoose[i]>1/255||tapVapor&&nextTapVapor[i]>1/255||recovery[i]>0||Math.abs(vx[i])>.1||Math.abs(vy[i])>.1||this.physics.recoveryRate>0&&Math.abs(field[i]-target[i])>1/255))settled=false;
       }
       this.loose=nextLoose;this.nextLoose=loose;
       if(tapVapor){this.tapVapor=nextTapVapor;this.nextTapVapor=tapVapor;}
+      this.settled=settled;
+      if(settled){
+        if(this.physics.recoveryRate>0)field.set(target);
+        this.loose.fill(0);vx.fill(0);vy.fill(0);this.gustSpeed=0;
+        this.tapVapor=this.nextTapVapor=this.advectedTapVapor=null;this.tapRemaining=0;
+      }
     }
     render(dt,paused,pointer,frameMs=16.667) {
       const gl=this.gl;
       if(this.destroyed||gl.isContextLost()) return false;
+      validateTime(dt);
       if(!this.field) return true;
-      if(paused&&!this.dirty&&this.lastTheme===this.theme) return true;
-      this.lastTheme=this.theme;this.dirty=false;
+      if(!paused&&dt>0)validatePointer(pointer);
+      // A stable, damaged mask can sleep while recovery is disabled. Wake only
+      // that mask when healing resumes; shared owners can use different rates.
+      if(this.lastRecoveryRate===0&&this.physics.recoveryRate>0)this.settled=false;
+      this.lastRecoveryRate=this.physics.recoveryRate;
+      if(paused&&!this.dirty&&!this.densityDirty) return true;
+      this.dirty=false;
       if(!paused&&!this.options.sharedBuffer&&frameMs<120) {
         this.frameAverage=this.frameAverage*.96+frameMs*.04;
         this.frames++;
@@ -583,13 +649,20 @@ export class CloudVolume {
           this.frames=0;this.frameAverage=16.667;
         }
       }
-      if(!paused) {this.time+=dt;this.simulate(dt,pointer);this.upload();}
+      if(!paused&&dt>0){
+        this.time+=dt;
+        if(!this.settled||pointer.segments?.length||pointer.effects?.length||this.environmentWind?.strength>0){this.simulate(Math.min(.25,dt),pointer);this.densityDirty=true;}
+      }
+      if(this.densityDirty)this.upload();
       gl.activeTexture(gl.TEXTURE1);gl.bindTexture(gl.TEXTURE_2D,this.formationTexture||this.fullFormationTexture);
       gl.activeTexture(gl.TEXTURE0);gl.bindTexture(gl.TEXTURE_2D,this.texture);
       const outputWidth=this.options.sharedBuffer?this.outputWidth:this.canvas.width;
       const outputHeight=this.options.sharedBuffer?this.outputHeight:this.canvas.height;
+      if(this.canvas.width<outputWidth)this.canvas.width=outputWidth;
+      if(this.canvas.height<outputHeight)this.canvas.height=outputHeight;
       gl.viewport(0,0,outputWidth,outputHeight);
-      gl.clearColor(0,0,0,0);gl.clear(gl.COLOR_BUFFER_BIT);gl.useProgram(this.program);
+      // The fixed fullscreen shader writes every output pixel, including transparent sky.
+      gl.useProgram(this.program);
       gl.uniform2f(this.uniforms.uSize,this.width,this.height);
       gl.uniform2f(this.uniforms.uResolution,outputWidth,outputHeight);
       gl.uniform1f(this.uniforms.uRadius,this.radius);
@@ -599,8 +672,8 @@ export class CloudVolume {
       gl.uniform1f(this.uniforms.uShadowStride,Math.max(1,Math.min(8,this.options.shadowStride??3)));
       gl.uniform1f(this.uniforms.uMarchSteps,Math.max(12,Math.min(36,this.options.raySteps ?? 36)));
       gl.uniform2f(this.uniforms.uEdgeFade,this.options.edgeFadeTop||0,this.options.edgeFadeBottom||0);
-      const lit=this.lighting?.lit||(this.theme==='theme-sunset'?[1,.96,.89]:this.theme==='theme-twilight'?[.91,.94,1]:[1,1,1]);
-      const shade=this.lighting?.shade||(this.theme==='theme-sunset'?[.79,.68,.73]:this.theme==='theme-twilight'?[.49,.60,.79]:[.66,.76,.87]);
+      const lit=this.lighting?.lit||[1,1,1];
+      const shade=this.lighting?.shade||[.66,.76,.87];
       gl.uniform3fv(this.uniforms.uLightDirection,this.lighting?.direction||[.55,-.72,.62]);
       gl.uniform1f(this.uniforms.uGlare,this.lighting?.glare??0);
       gl.uniform3fv(this.uniforms.uGlareTint,this.lighting?.glareTint||lit);
@@ -619,7 +692,7 @@ export class CloudVolume {
       for(const layer of this.layers.keys())this.releaseLayer(layer);
       this.gl.deleteTexture(this.texture);this.gl.deleteTexture(this.fullFormationTexture);
       this.gl.deleteBuffer(this.buffer);this.gl.deleteProgram(this.program);
-      this.field=this.target=this.loose=this.tapVapor=null;
+      for(const key of layerKeys)if(ArrayBuffer.isView(this[key])||Array.isArray(this[key]))this[key]=null;
     }
   }
   CloudVolume.vertexShader=vertex;CloudVolume.fragmentShader=fragment;

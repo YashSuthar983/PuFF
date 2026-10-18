@@ -1,0 +1,17 @@
+.puff-text-ready, .puff-text-ready * {
+  color: transparent !important;
+  -webkit-text-fill-color: transparent !important;
+  text-shadow: none !important;
+}
+.puff-text-ready::selection, .puff-text-ready *::selection {
+  color: var(--puff-original-color, #fff) !important;
+  -webkit-text-fill-color: var(--puff-original-color, #fff) !important;
+}
+.puff-text-canvas {
+  position: absolute !important;
+  pointer-events: none !important;
+  user-select: none !important;
+  display: block !important;
+  max-width: none !important;
+  max-height: none !important;
+}

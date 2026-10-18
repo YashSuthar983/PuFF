@@ -1,0 +1,43 @@
+name: PuFF checks
+on: [push, pull_request, workflow_dispatch]
+permissions:
+  contents: read
+
+jobs:
+  package:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        node: [22, 24]
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+      - run: npm ci
+      - run: sudo apt-get update
+      - run: sudo apt-get install -y build-essential libegl1-mesa-dev libgles2-mesa-dev
+      - run: npm test
+        env:
+          PUFF_REQUIRE_GL: '1'
+      - run: npm run test:package
+
+  browsers:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        browser: [chromium, firefox, webkit]
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npx playwright install --with-deps ${{ matrix.browser }}
+      - run: npm run test:browser
+        env:
+          PUFF_BROWSER: ${{ matrix.browser }}
+          PUFF_SOFTWARE_GL: '1'

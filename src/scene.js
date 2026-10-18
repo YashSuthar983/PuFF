@@ -64,11 +64,15 @@ float cloud(vec3 p){
   vec3 uv=p/uExtent*.5+.5;
   if(any(lessThan(uv,vec3(0)))||any(greaterThan(uv,vec3(1))))return 0.;
   float field=texture(uField,uv).r;
+  if(field<=0.)return 0.;
   vec3 drift=p+uTime*uWindDirection;
   float wisps=uOctaves>=3.?noise(drift*9.4+vec3(8,3,1)):.5;
   float erosion=(1.-(uOctaves>=4.?noise(drift*19.4+vec3(7,5,2)):.5))*uDetail*uErosion;
   return max(0.,field*(1.-uDetail*.18*(1.-wisps))-erosion)*uCoverage*1.6;
  }
+ float envelope=1.-smoothstep(uVolumeDepth*.365,uVolumeDepth*.5,abs(original.z));
+ if(uShape==1)envelope*=1.-smoothstep(uShapeRadius*.61,uShapeRadius,length(original));
+ if(envelope<=0.)return 0.;
  p=p*uNoiseScale+uTime*uWindDirection;
  // uOctaves (1-4) drops the finer octaves for their mean, .5: the same cloud with less detail, for less work.
  float large=noise(p*1.15+vec3(4,1,7));
@@ -81,8 +85,6 @@ float cloud(vec3 p){
  mass=max(0.,mass-(1.-detail)*uDetail*uErosion-(1.-fine)*uDetail*uErosion/3.);
  if(uPreset==2)mass=mix(.15,.65,shape)*uCoverage;
  if(uPreset==3)mass=pow(mass,.7)*(.6+.4*detail);
- float envelope=1.-smoothstep(uVolumeDepth*.365,uVolumeDepth*.5,abs(original.z));
- if(uShape==1)envelope*=1.-smoothstep(uShapeRadius*.61,uShapeRadius,length(original));
  return mass*envelope;
 }
 float segmentDistance(vec2 p,vec2 a,vec2 b){vec2 d=b-a;float t=clamp(dot(p-a,d)/max(.00001,dot(d,d)),0.,1.);return length(p-a-d*t);}
@@ -162,6 +164,8 @@ void main(){
  color=m.a>.00001?vec4(m.rgb/m.a,m.a):vec4(0);
 }`;
 const profiles=CloudControls.quality;
+const lightningSettings={propagation:'propagation',pulseCount:'pulseCount',pulseSpacing:'pulseSpacing',glowDecay:'glowDecay',glowSpread:'glowSpread',lightningPower:'power',boltReach:'reach',branches:'branches',interval:'interval',randomness:'randomness',variation:'variation',afterglow:'afterglow',cloudGlow:'glow'};
+const ranges={...CloudControls.scene,...Object.fromEntries(Object.entries(lightningSettings).map(([key,kind])=>[key,CloudControls.lightning[kind]]))};
 // quality:'auto' picks a profile for the device: 'cpu' when WebGL is drawn in software (no usable GPU: SwiftShader,
 // llvmpipe and the like run the shader on the CPU), 'low' on phones, tablets and low-memory / low-core machines,
 // 'medium' otherwise.
@@ -190,14 +194,30 @@ export const CloudPresets=Object.freeze({
 function customFragment(body,uniforms={}){
  if(body!=null&&typeof body!=='string')throw new TypeError('densityShader must be a GLSL function body.');
  const declarations=Object.entries(uniforms).map(([name,value])=>{
-  if(!/^u[A-Za-z0-9_]+$/.test(name)||fragment.includes(' '+name+';'))throw new TypeError('Custom uniforms need unique u-prefixed identifiers.');
+  if(!/^u[A-Za-z0-9_]+$/.test(name)||new RegExp('\\b'+name+'\\b').test(fragment))throw new TypeError('Custom uniforms need unique u-prefixed identifiers.');
   const size=Array.isArray(value)?value.length:1;
-  if(size<1||size>4||!(Array.isArray(value)?value:[value]).every(Number.isFinite))throw new TypeError('Custom uniforms must be a finite number or 2–4 component vector.');
+  if(size<1||size>4||!Array.from(Array.isArray(value)?value:[value]).every(Number.isFinite))throw new TypeError('Custom uniforms must be a finite number or 1–4 component vector.');
   return 'uniform '+(size===1?'float':'vec'+size)+' '+name+';';
  }).join('\n');
  let source=fragment;
  if(body!=null){const start=source.indexOf('float cloud(vec3 p){'),end=source.indexOf('float segmentDistance',start);const base=source.slice(start,end).replace('float cloud(vec3 p)','float cloudBase(vec3 p)');source=source.slice(0,start)+base+'float cloud(vec3 p){'+body+'}\n'+source.slice(end);}
  return source.replace('out vec4 color;',declarations+'\nout vec4 color;');
+}
+function compileProgram(gl,fragmentSource,position){
+ const program=gl.createProgram(),shaders=[];
+ try{
+  for(const [type,source]of [[gl.VERTEX_SHADER,vertex],[gl.FRAGMENT_SHADER,fragmentSource]]){
+   const shader=gl.createShader(type);shaders.push(shader);
+   gl.shaderSource(shader,source);gl.compileShader(shader);
+   if(!gl.getShaderParameter(shader,gl.COMPILE_STATUS))throw new Error(gl.getShaderInfoLog(shader));
+   gl.attachShader(program,shader);
+  }
+  if(position!==undefined)gl.bindAttribLocation(program,position,'aPosition');
+  gl.linkProgram(program);
+  if(!gl.getProgramParameter(program,gl.LINK_STATUS))throw new Error(gl.getProgramInfoLog(program));
+  return program;
+ }catch(error){gl.deleteProgram(program);throw error;}
+ finally{for(const shader of shaders)gl.deleteShader(shader);}
 }
 export class CloudScene {
  constructor(canvas,options={}){
@@ -206,20 +226,17 @@ export class CloudScene {
   if(!this.gl)throw new Error('CloudScene requires WebGL2.');
   this.options={...Object.fromEntries(Object.entries(CloudControls.scene).map(([k,v])=>[k,v.default])),timeOfDay:'custom',transparent:false,quality:'auto',preset:'clouds',shape:'layer',...CloudPresets.clouds,...Object.fromEntries(['propagation','pulseCount','pulseSpacing','glowDecay','glowSpread'].map(k=>[k,CloudControls.lightning[k].default])),lightningMode:'random',lightningPower:1,boltReach:140,branches:4,interval:7000,randomness:.7,variation:.35,afterglow:500,cloudGlow:1,color:'#8edaff',windDirection:[.025,-.012,.008],lightDirection:[-.35,.45,.3],offset:[0,0,0],scale:[1,1,1],interactive:true,...options};
   this.events=new AbortController();this.pointer={x:0,y:0,active:false};this.lightning=new Lightning(null,{...(options.seed!==undefined?{seed:options.seed}:{}),onStrike:event=>this.options.onStrike?.(event)});this.options.seed=this.lightning.getState().settings.seed;
-  this.externalLights=[];this.externalSegments=[];this.time=0;this.last=0;this.frame=0;this.running=false;this.paused=false;this.destroyed=false;
+  this.externalLights=[];this.externalSegments=[];this.time=0;this.last=null;this.nextRender=0;this.frame=0;this.running=false;this.paused=false;this.destroyed=false;
   const gl=this.gl;
   const timer=gl.getExtension('EXT_disjoint_timer_query_webgl2');
   this.timer=timer&&typeof timer.TIME_ELAPSED_EXT==='number'?timer:null;
   this.measurements=[];this.renderScale=1;this.gpuMs=null;this.timingSamples=0;this.adjustAt=0;
   this.device=deviceProfile(gl);this.frameMs=null;this.paceAt=0;this.paceSamples=0;this.paceAdjustAt=0;
   this.lightBuffers={positions:new Float32Array(12),colors:new Float32Array(9),starts:new Float32Array(128),ends:new Float32Array(128),boltColors:new Float32Array(96),radii:new Float32Array(3)};
-  const compile=(type,source)=>{const s=gl.createShader(type);gl.shaderSource(s,source);gl.compileShader(s);if(!gl.getShaderParameter(s,gl.COMPILE_STATUS))throw new Error(gl.getShaderInfoLog(s));return s;};
-  const vs=compile(gl.VERTEX_SHADER,vertex),fs=compile(gl.FRAGMENT_SHADER,customFragment(options.densityShader,options.uniforms));
-  this.program=gl.createProgram();gl.attachShader(this.program,vs);gl.attachShader(this.program,fs);gl.linkProgram(this.program);gl.deleteShader(vs);gl.deleteShader(fs);
-  if(!gl.getProgramParameter(this.program,gl.LINK_STATUS))throw new Error(gl.getProgramInfoLog(this.program));
+  this.program=compileProgram(gl,customFragment(options.densityShader,options.uniforms));
   this.buffer=gl.createBuffer();gl.bindBuffer(gl.ARRAY_BUFFER,this.buffer);gl.bufferData(gl.ARRAY_BUFFER,new Float32Array([-1,-1,1,-1,-1,1,-1,1,1,-1,1,1]),gl.STATIC_DRAW);
   gl.useProgram(this.program);const position=gl.getAttribLocation(this.program,'aPosition');gl.enableVertexAttribArray(position);gl.vertexAttribPointer(position,2,gl.FLOAT,false,0,0);
-  this.compile=compile;this.position=position;this.amortized=null;this.presentProgram=null;
+  this.position=position;this.amortized=null;this.presentProgram=null;
   this.uniforms=Object.fromEntries(['uOctaves','uSelfShadow','uLightSamples','uMaxLights','uBackgroundOpacity','uLightRadii[0]','uShadowStride','uResolution','uTime','uCoverage','uAmbient','uExposure','uSteps','uLights[0]','uLightColors[0]','uBolts[0]','uBoltEnds[0]','uBoltColors[0]','uBoltCount','uPreset','uShape','uDetail','uCloudColor','uBackground','uField','uHasField','uExtent','uDensityScale','uNoiseScale','uSoftness','uErosion','uExtinction','uShadowStrength','uLightIntensity','uLightFalloff','uViewScale','uVolumeDepth','uShapeRadius','uWindDirection','uLightDirection','uOffset','uScale'].map(k=>[k,gl.getUniformLocation(this.program,k)]));
   this.customUniforms=Object.fromEntries(Object.entries(options.uniforms||{}).map(([key,value])=>[key,{value,location:gl.getUniformLocation(this.program,key)}]));
   this.fieldTexture=gl.createTexture();gl.bindTexture(gl.TEXTURE_3D,this.fieldTexture);
@@ -235,41 +252,46 @@ export class CloudScene {
    listen(canvas,'pointercancel',()=>{this.pointer.active=false;this.lightning.clear();});
   }
   listen(this.reduced,'change',e=>this.setPaused(e.matches));
-  listen(globalThis.document,'visibilitychange',()=>{this.last=0;if(globalThis.document.hidden){cancelAnimationFrame(this.frame);this.frame=0;this.lightning.clear();}else if(this.running)this.schedule();});
+  listen(globalThis.document,'visibilitychange',()=>{this.last=null;if(globalThis.document.hidden){cancelAnimationFrame(this.frame);this.frame=0;this.lightning.clear();}else if(this.running)this.schedule();});
   listen(canvas,'webglcontextlost',e=>{e.preventDefault();this.stop();});
-  this.setOptions({quality:this.options.quality,...options});this.resize();
-  if(globalThis.ResizeObserver){this.observer=new ResizeObserver(()=>this.resize());this.observer.observe(canvas);}
-  if(options.autoStart!==false)this.start();
+  try{
+   this.setOptions({quality:this.options.quality,...options});this.resize();
+   if(globalThis.ResizeObserver){this.observer=new ResizeObserver(()=>this.resize());this.observer.observe(canvas);}
+   if(options.autoStart!==false)this.start();
+  }catch(error){this.destroy();throw error;}
  }
  setOptions(patch={}){
+  const previousFps=this.options.fps;
+  for(const key of ['interactive','autoStart','powerPreference','failIfMajorPerformanceCaveat'])if(key in patch&&patch[key]!==this.options[key])throw new TypeError('Changing '+key+' requires a new CloudScene.');
   for(const key of ['onFrame','onStrike'])if(key in patch&&patch[key]!=null&&typeof patch[key]!=='function')throw new TypeError(key+' must be a function.');
-  for(const key of ['color','cloudColor','background'])if(key in patch&&!(/^#[0-9a-f]{6}$/i.test(patch[key])||Array.isArray(patch[key])&&patch[key].length===3&&patch[key].every(Number.isFinite)))throw new TypeError(key+' must be a hex color or RGB vector.');
+  for(const key of ['color','cloudColor','background'])if(key in patch&&!(typeof patch[key]==='string'&&/^#[0-9a-f]{6}$/i.test(patch[key])||Array.isArray(patch[key])&&patch[key].length===3&&Array.from(patch[key]).every(Number.isFinite)))throw new TypeError(key+' must be a hex color or RGB vector.');
+  for(const key of ['lightning','transparent','interactive','autoStart'])if(key in patch&&typeof patch[key]!=='boolean')throw new TypeError(key+' must be boolean.');
   if('densityShader' in patch&&patch.densityShader!==this.options.densityShader)throw new TypeError('A new densityShader requires a new CloudScene.');
-  if(patch.quality&&patch.quality!=='auto'&&!profiles[patch.quality])throw new RangeError('quality must be auto, cpu, low, medium, or high');
+  if('quality' in patch&&patch.quality!=='auto'&&!Object.hasOwn(profiles,patch.quality))throw new RangeError('quality must be auto, cpu, low, medium, or high');
+  if('preset' in patch&&!Object.hasOwn(CloudPresets,patch.preset))throw new RangeError('Unknown cloud preset.');
+  if('timeOfDay' in patch&&patch.timeOfDay!=='custom'&&!Object.hasOwn(CloudTimes,patch.timeOfDay))throw new RangeError('Unknown time of day.');
+  if('shape' in patch&&!['layer','sphere'].includes(patch.shape))throw new RangeError('shape must be layer or sphere; use setDensityField for other shapes.');
+  if('lightningMode' in patch&&!CloudControls.lightningModes.includes(patch.lightningMode))throw new RangeError('Unknown lightning mode.');
+  for(const key of Object.keys(ranges))if(key in patch&&!Number.isFinite(Number(patch[key])))throw new TypeError(key+' must be finite.');
+  for(const key of ['windDirection','lightDirection','offset','scale'])if(key in patch&&(!Array.isArray(patch[key])||patch[key].length!==3||!Array.from(patch[key]).every(Number.isFinite)||key==='scale'&&patch[key].some(n=>n<=0)))throw new TypeError(key+' must be a finite 3D vector (positive for scale).');
+  if('seed' in patch&&!Number.isFinite(patch.seed))throw new TypeError('seed must be finite.');
+  if(patch.uniforms)this.setUniforms(patch.uniforms);
   if(patch.preset){
-   if(!CloudPresets[patch.preset])throw new RangeError('Unknown cloud preset.');
    Object.assign(this.options,CloudPresets[patch.preset]);this.options.preset=patch.preset;
   }
   if('timeOfDay' in patch){
-   if(patch.timeOfDay!=='custom'&&!Object.hasOwn(CloudTimes,patch.timeOfDay))throw new RangeError('Unknown time of day.');
    this.options.timeOfDay=patch.timeOfDay;
    if(patch.timeOfDay!=='custom'){const t=CloudTimes[patch.timeOfDay];Object.assign(this.options,{cloudColor:t.lit.slice(),background:t.background.slice(),ambient:t.ambient,lightDirection:[t.direction[0],-t.direction[1],t.direction[2]]});}
   }
-  if('transparent' in patch){if(typeof patch.transparent!=='boolean')throw new TypeError('transparent must be boolean.');this.options.backgroundOpacity=patch.transparent?0:1;}
-  if(patch.shape&&!['layer','sphere'].includes(patch.shape))throw new RangeError('shape must be layer or sphere; use setDensityField for other shapes.');
+  if('transparent' in patch)this.options.backgroundOpacity=patch.transparent?0:1;
   if(patch.quality)Object.assign(this.options,profiles[patch.quality==='auto'?this.device.profile:patch.quality]);
-  if(patch.lightningMode&&!CloudControls.lightningModes.includes(patch.lightningMode))throw new RangeError('Unknown lightning mode.');
-  for(const key of ['quality','color','lightning','lightningMode','shape','cloudColor','background','onFrame','onStrike'])if(key in patch)this.options[key]=patch[key];
-  const ranges={...CloudControls.scene,...Object.fromEntries([['propagation','propagation'],['pulseCount','pulseCount'],['pulseSpacing','pulseSpacing'],['glowDecay','glowDecay'],['glowSpread','glowSpread'],['lightningPower','power'],['boltReach','reach'],['branches','branches'],['interval','interval'],['randomness','randomness'],['variation','variation'],['afterglow','afterglow'],['cloudGlow','glow']].map(([k,v])=>[k,CloudControls.lightning[v]]))};
-  for(const [key,{min,max}]of Object.entries(ranges))if(key in patch){if(!Number.isFinite(Number(patch[key])))throw new TypeError(key+' must be finite.');this.options[key]=clamp(patch[key],min,max);}
-  for(const key of ['windDirection','lightDirection','offset','scale'])if(key in patch){
-   if(!Array.isArray(patch[key])||patch[key].length!==3||!patch[key].every(Number.isFinite)||(key==='scale'&&patch[key].some(n=>n<=0)))throw new TypeError(key+' must be a finite 3D vector (positive for scale).');
-   this.options[key]=patch[key].slice();
-  }
+  for(const key of ['quality','color','lightning','lightningMode','shape','cloudColor','background','onFrame','onStrike','windDirection','lightDirection','offset','scale'])if(key in patch)this.options[key]=Array.isArray(patch[key])?patch[key].slice():patch[key];
+  for(const [key,{min,max}]of Object.entries(ranges))if(key in patch)this.options[key]=clamp(patch[key],min,max);
   if('seed' in patch){this.lightning.configure('seed',patch.seed);this.options.seed=this.lightning.getState().settings.seed;}
-  for(const [key,kind]of [['propagation','propagation'],['pulseCount','pulseCount'],['pulseSpacing','pulseSpacing'],['glowDecay','glowDecay'],['glowSpread','glowSpread'],['lightningPower','power'],['boltReach','reach'],['branches','branches'],['interval','interval'],['randomness','randomness'],['variation','variation'],['afterglow','afterglow'],['cloudGlow','glow'],['lightningMode','mode']])if(key in patch)this.lightning.configure(kind,this.options[key]);
+  for(const [key,kind]of Object.entries(lightningSettings))if(key in patch)this.lightning.configure(kind,this.options[key]);
+  if('lightningMode' in patch)this.lightning.configure('mode',this.options.lightningMode);
   this.options.transparent=this.options.backgroundOpacity===0;
-  if(patch.uniforms)this.setUniforms(patch.uniforms);
+  if(this.options.fps!==previousFps)this.last=null;
   if('adaptiveQuality' in patch&&!this.options.adaptiveQuality)this.renderScale=1;
   this.renderScale=Math.max(this.options.minRenderScale,this.renderScale);
   if(this.width&&['adaptiveQuality','minRenderScale','quality','resolutionScale','resolutionLimit','pixelRatio'].some(key=>key in patch))this.resize(this.width,this.height);
@@ -280,7 +302,7 @@ export class CloudScene {
  setUniforms(patch){
   for(const [key,value]of Object.entries(patch)){
    const current=this.customUniforms[key],array=Array.isArray(value)?value:[value];
-   if(!current||!array.every(Number.isFinite)||array.length!==(Array.isArray(current.value)?current.value.length:1))throw new TypeError('Unknown or incompatible custom uniform: '+key);
+   if(!Object.hasOwn(this.customUniforms,key)||!Array.from(array).every(Number.isFinite)||array.length!==(Array.isArray(current.value)?current.value.length:1))throw new TypeError('Unknown or incompatible custom uniform: '+key);
   }
   for(const [key,value]of Object.entries(patch))this.customUniforms[key].value=Array.isArray(value)?value.slice():value;
   return this;
@@ -288,13 +310,14 @@ export class CloudScene {
  setDensityField(data,{width,height,depth,extent=[2,2,2]}={}){
   const max=this.gl.getParameter(this.gl.MAX_3D_TEXTURE_SIZE);
   if(!(data instanceof Uint8Array)||![width,height,depth].every(n=>Number.isInteger(n)&&n>0&&n<=max)||data.length!==width*height*depth)throw new RangeError('Expected a Uint8Array matching valid width × height × depth.');
-  if(!Array.isArray(extent)||extent.length!==3||!extent.every(n=>Number.isFinite(n)&&n>0))throw new RangeError('extent must contain three positive half extents.');
+  if(!Array.isArray(extent)||extent.length!==3||!Array.from(extent).every(n=>Number.isFinite(n)&&n>0))throw new RangeError('extent must contain three positive half extents.');
   const gl=this.gl;gl.bindTexture(gl.TEXTURE_3D,this.fieldTexture);gl.pixelStorei(gl.UNPACK_ALIGNMENT,1);
   gl.texImage3D(gl.TEXTURE_3D,0,gl.R8,width,height,depth,0,gl.RED,gl.UNSIGNED_BYTE,data);
   this.extent=extent.slice();this.hasField=true;return this;
  }
  clearDensityField(){this.hasField=false;return this;}
  resize(width,height){
+  if(width!==undefined&&(!Number.isFinite(width)||width<=0)||height!==undefined&&(!Number.isFinite(height)||height<=0))throw new RangeError('Canvas dimensions must be finite and positive.');
   const rect=this.canvas.getBoundingClientRect?.();this.width=Math.max(1,width||rect?.width||this.canvas.clientWidth||640);this.height=Math.max(1,height||rect?.height||this.canvas.clientHeight||480);
   const maximum=this.gl.getParameter(this.gl.MAX_RENDERBUFFER_SIZE)||this.options.resolutionLimit;
   const scale=Math.min(this.options.pixelRatio*this.options.resolutionScale,this.options.resolutionLimit/Math.max(this.width,this.height),maximum/Math.max(this.width,this.height));
@@ -302,16 +325,27 @@ export class CloudScene {
   if(this.canvas.width!==pixelsX)this.canvas.width=pixelsX;if(this.canvas.height!==pixelsY)this.canvas.height=pixelsY;
   this.lightning.resize(this.width,this.height,1);if(this.paused)this.render(this.time,0);
  }
- setPointer(event,y){if(typeof event==='number'){this.pointer={x:event,y,active:true};return;}const rect=this.canvas.getBoundingClientRect();this.pointer={x:event.clientX-rect.left,y:event.clientY-rect.top,active:true};}
+ setPointer(event,y){const x=typeof event==='number'?event:event?.clientX,nextY=typeof event==='number'?y:event?.clientY;if(!Number.isFinite(x)||!Number.isFinite(nextY))throw new TypeError('Pointer coordinates must be finite.');if(typeof event==='number'){this.pointer={x,y:nextY,active:true};return;}const rect=this.canvas.getBoundingClientRect();this.pointer={x:x-rect.left,y:nextY-rect.top,active:true};}
  clearPointer(){this.pointer.active=false;}
  clearLightning(){this.lightning.clear();}
- setSources(lights=[],segments=[]){this.externalLights=lights.slice(0,3);this.externalSegments=segments.slice(0,32);}
- setPaused(value){this.paused=Boolean(value);this.last=0;if(this.paused){cancelAnimationFrame(this.frame);this.frame=0;this.lightning.clear();this.render(this.time,0);}else if(this.running)this.schedule();}
- strike(x=this.pointer.x,y=this.pointer.y){this.pointer={x,y,active:true};this.lightning.trigger();}
+ setSources(lights=[],segments=[]){
+  const color=value=>value===undefined||typeof value==='string'&&/^#[0-9a-f]{6}$/i.test(value)||Array.isArray(value)&&value.length===3&&Array.from(value).every(Number.isFinite);
+  const point=p=>p&&Number.isFinite(p.x)&&Number.isFinite(p.y);
+  if(!Array.isArray(lights)||!Array.isArray(segments)||Array.from(lights).some(l=>!point(l)||!Number.isFinite(l.strength)||l.strength<0||l.depth!==undefined&&!Number.isFinite(l.depth)||l.radius!==undefined&&(!Number.isFinite(l.radius)||l.radius<0)||!color(l.color))||Array.from(segments).some(s=>!s||!point(s.a)||!point(s.b)||!Number.isFinite(s.strength)||s.strength<0||!color(s.color)))throw new TypeError('Expected finite light sources and bolt endpoints.');
+  const copyColor=s=>({...s,...(Array.isArray(s.color)?{color:s.color.slice()}:{})});
+  this.externalLights=lights.slice(0,3).map(copyColor);this.externalSegments=segments.slice(0,32).map(s=>({...copyColor(s),a:{...s.a},b:{...s.b}}));
+ }
+ setPaused(value){const next=Boolean(value);if(next===this.paused)return;this.paused=next;this.last=null;if(this.paused){cancelAnimationFrame(this.frame);this.frame=0;this.lightning.clear();this.render(this.time,0);}else if(this.running)this.schedule();}
+ strike(x=this.pointer.x,y=this.pointer.y){this.setPointer(x,y);this.lightning.trigger();}
  schedule(){if(!this.destroyed&&this.running&&!this.paused&&!globalThis.document?.hidden&&!this.frame)this.frame=requestAnimationFrame(t=>this.tick(t));}
  tick(now){
-  this.frame=0;if(!this.running||this.destroyed)return;
-  if(!this.last||now-this.last>=1000/this.options.fps){const fresh=!this.last,dt=this.last?Math.min(.5,(now-this.last)/1000):1/this.options.fps;this.last=now;if(!this.paused)this.time+=dt*this.options.drift;this.render(this.time,this.paused?0:dt);if(!this.timer)this.pace(now,fresh);}
+  this.frame=0;if(!this.running||this.destroyed||this.paused||globalThis.document?.hidden)return;
+  const fresh=this.last===null,interval=1000/this.options.fps;
+  if(fresh||now+.0001>=this.nextRender){
+   const dt=fresh?interval/1000:Math.min(.5,(now-this.last)/1000);
+   this.nextRender=fresh?now+interval:this.nextRender+(Math.floor(Math.max(0,now-this.nextRender)/interval)+1)*interval;
+   this.last=now;this.time+=dt*this.options.drift;this.render(this.time,dt);if(!this.timer)this.pace(now,fresh);
+  }
   this.schedule();
  }
  // Automatic resolution without a GPU timer (software WebGL, most phones): the frame cadence. A busy GPU or CPU
@@ -330,10 +364,10 @@ export class CloudScene {
   if(Math.abs(scale-this.renderScale)>.01){this.renderScale=scale;this.paceAdjustAt=this.paceSamples;this.resize(this.width,this.height);}
  }
  start(){if(this.destroyed)throw new Error('CloudScene was destroyed.');this.running=true;this.schedule();return this;}
- stop(){this.running=false;cancelAnimationFrame(this.frame);this.frame=0;this.last=0;return this;}
+ stop(){this.running=false;cancelAnimationFrame(this.frame);this.frame=0;this.last=null;return this;}
  getPerformance(){return {gpuTimingAvailable:Boolean(this.timer),gpuMs:this.gpuMs,frameMs:this.frameMs,renderScale:this.renderScale,width:this.canvas.width,height:this.canvas.height,software:this.device.software,profile:this.options.quality==='auto'?this.device.profile:this.options.quality};}
  pollTiming(){
-  if(!this.timer)return;
+  if(!this.timer||!this.measurements.length)return;
   const gl=this.gl,disjoint=gl.getParameter(this.timer.GPU_DISJOINT_EXT);
   while(this.measurements.length){
    const query=this.measurements[0];
@@ -352,17 +386,19 @@ export class CloudScene {
  }
  render(time=this.time,dt=0){
   const gl=this.gl;if(this.destroyed||gl.isContextLost())return false;
+  if(!Number.isFinite(time)||!Number.isFinite(dt)||dt<0)throw new TypeError('Render time and dt must be finite; dt must be nonnegative.');
   this.pollTiming();
   const color=rgb(this.options.color);
   const active=this.options.lightning&&!this.paused&&(this.options.lightningMode!=='hover'||this.pointer.active)&&!this.reduced?.matches;
   this.lightning.update(dt,{...this.pointer,color,enabled:active,bounds:{x:0,y:0,width:this.width,height:this.height}},(reach,origin)=>Array.from({length:12},(_,i)=>{const a=i*.618*6.283;return{x:origin.x+Math.cos(a)*reach*(.4+i/24),y:origin.y+Math.sin(a)*reach*(.4+i/24)};}));
-  const lights=[...this.externalLights,...(this.options.lightning?this.lightning.getLights():[])];
-  const segments=[...this.externalSegments,...(this.options.lightning?this.lightning.getSegments():[])];
-  const bands=Math.round(this.options.amortize),amortized=bands>1?this.amortizedTargets():null;
+  if(this.destroyed||gl.isContextLost())return false;
+  const bands=Math.round(this.options.amortize),amortized=bands>1?this.amortizedTargets(bands):null;
   if(!amortized&&this.amortized)this.releaseAmortized();
   if(amortized&&this.paused)amortized.ready=false;   // a still frame is drawn whole
   // Amortized, one cloud frame keeps the uniforms (time, lights) it started with, so its bands match.
   if(amortized&&amortized.ready&&amortized.band>0)return this.drawFrame(amortized,bands,time);
+  const lights=[...this.externalLights,...(this.options.lightning?this.lightning.getLights():[])];
+  const segments=[...this.externalSegments,...(this.options.lightning?this.lightning.getSegments():[])];
   const {positions,colors,starts,ends,boltColors,radii}=this.lightBuffers;
   for(const buffer of Object.values(this.lightBuffers))buffer.fill(0);
   const aspect=this.canvas.width/this.canvas.height;
@@ -393,14 +429,15 @@ export class CloudScene {
   this.options.onFrame?.({time,width:this.canvas.width,height:this.canvas.height,lightning:this.lightning.getState()});return true;
  }
  // Three canvas-sized targets: the previous and next finished cloud frames, and the one being drawn.
- amortizedTargets(){
+ amortizedTargets(bands){
   const gl=this.gl,width=this.canvas.width,height=this.canvas.height;
-  if(this.amortized?.width===width&&this.amortized.height===height)return this.amortized;
+  if(this.amortized?.width===width&&this.amortized.height===height){
+   if(this.amortized.bands!==bands){this.amortized.bands=bands;this.amortized.band=0;this.amortized.ready=false;}
+   return this.amortized;
+  }
   this.releaseAmortized();
   if(!this.presentProgram){
-   const program=gl.createProgram(),vs=this.compile(gl.VERTEX_SHADER,vertex),fs=this.compile(gl.FRAGMENT_SHADER,presentFragment);
-   gl.attachShader(program,vs);gl.attachShader(program,fs);gl.bindAttribLocation(program,this.position,'aPosition');gl.linkProgram(program);gl.deleteShader(vs);gl.deleteShader(fs);
-   if(!gl.getProgramParameter(program,gl.LINK_STATUS))throw new Error(gl.getProgramInfoLog(program));
+   const program=compileProgram(gl,presentFragment,this.position);
    this.presentProgram=program;this.presentMix=gl.getUniformLocation(program,'uMix');
    gl.useProgram(program);gl.uniform1i(gl.getUniformLocation(program,'uPrev'),1);gl.uniform1i(gl.getUniformLocation(program,'uNext'),2);
   }
@@ -413,7 +450,7 @@ export class CloudScene {
    return {texture,framebuffer};
   };
   gl.bindFramebuffer(gl.FRAMEBUFFER,null);
-  this.amortized={width,height,targets:[target(),target(),target()],prev:0,next:1,work:2,band:0,ready:false};
+  this.amortized={width,height,bands,targets:[target(),target(),target()],prev:0,next:1,work:2,band:0,ready:false};
   gl.bindFramebuffer(gl.FRAMEBUFFER,null);gl.useProgram(this.program);
   return this.amortized;
  }

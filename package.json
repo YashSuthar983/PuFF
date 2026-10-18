@@ -1,34 +1,51 @@
 {
-  "name": "@yashsuthar/cloud-kit",
+  "name": "@yashsuthar/puff",
   "version": "0.3.3",
-  "private": true,
+  "private": false,
   "type": "module",
-  "description": "Interactive volumetric clouds, cloud text, and internal lightning for the browser.",
+  "description": "Interactive clouds, lettering, and storms for the web.",
+  "license": "MIT",
+  "author": "Yash Suthar",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/YashSuthar983/PuFF.git"
+  },
+  "homepage": "https://github.com/YashSuthar983/PuFF#readme",
+  "bugs": {
+    "url": "https://github.com/YashSuthar983/PuFF/issues"
+  },
+  "keywords": ["clouds", "webgl2", "volumetric", "text", "lightning"],
+  "publishConfig": {"access": "public"},
+  "sideEffects": ["./dist/puff.js", "./src/text.css"],
   "exports": {
     ".": {
       "types": "./index.d.ts",
       "import": "./src/index.js"
-    }
+    },
+    "./dist/puff.js": "./dist/puff.js",
+    "./text.css": "./src/text.css"
   },
   "files": [
     "src",
-    "demo-performance.js",
     "dist",
     "index.d.ts",
     "README.md",
     "DESIGN.md",
-    "PERFORMANCE.md",
-    "examples",
-    "build.mjs",
-    "tests",
-    "benchmarks",
-    "showcase",
-    "website",
-    "emerald-demo",
-    "emerald-3d"
+    "CHANGELOG.md",
+    "RELEASING.md"
   ],
   "scripts": {
     "build": "node build.mjs",
-    "test": "node tests/run.mjs"
+    "test": "node tests/run.mjs",
+    "test:package": "node tests/package.mjs",
+    "test:browser": "node tests/browser.mjs",
+    "check": "npm --offline --no-update-notifier test && npm --offline --no-update-notifier run test:package && npm --offline --no-update-notifier run test:browser",
+    "prepack": "node build.mjs",
+    "prepublishOnly": "node scripts/release.mjs"
+  },
+  "devDependencies": {
+    "esbuild": "0.27.0",
+    "playwright": "1.61.1",
+    "typescript": "5.9.3"
   }
 }

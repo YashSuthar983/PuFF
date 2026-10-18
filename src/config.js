@@ -4,10 +4,10 @@ export const CloudControls=Object.freeze({
  // Each profile sets every cost switch, so changing profile never leaves another profile's feature level behind.
  // cpu: for WebGL drawn in software (no usable GPU), where every noise octave and light sample is paid in full.
  quality:Object.freeze({
-  cpu:{resolutionLimit:480,raySteps:10,fps:30,octaves:2,selfShadow:0,lightSamples:0,maxLights:1,amortize:8},
-  low:{resolutionLimit:800,raySteps:20,fps:15,octaves:4,selfShadow:1,lightSamples:2,maxLights:3,amortize:1},
-  medium:{resolutionLimit:1280,raySteps:40,fps:24,octaves:4,selfShadow:1,lightSamples:2,maxLights:3,amortize:1},
-  high:{resolutionLimit:1920,raySteps:64,fps:30,octaves:4,selfShadow:1,lightSamples:2,maxLights:3,amortize:1}
+  cpu:Object.freeze({resolutionLimit:480,raySteps:10,fps:30,octaves:2,selfShadow:0,lightSamples:0,maxLights:1,amortize:8}),
+  low:Object.freeze({resolutionLimit:800,raySteps:20,fps:15,octaves:4,selfShadow:1,lightSamples:2,maxLights:3,amortize:1}),
+  medium:Object.freeze({resolutionLimit:1280,raySteps:40,fps:24,octaves:4,selfShadow:1,lightSamples:2,maxLights:3,amortize:1}),
+  high:Object.freeze({resolutionLimit:1920,raySteps:64,fps:30,octaves:4,selfShadow:1,lightSamples:2,maxLights:3,amortize:1})
  }),
  scene:Object.freeze({
   backgroundOpacity:control('Background opacity (0 = transparent)',0,1,.05,1,'Background'),
@@ -37,8 +37,8 @@ export const CloudControls=Object.freeze({
   selfShadow:control('Self-shadowing (one extra sample per shadow step)',0,1,1,1,'Rendering'),
   lightSamples:control('Shadow samples per point light (0 = unshadowed)',0,2,1,2,'Rendering'),
   maxLights:control('Point lights drawn',0,3,1,3,'Rendering'),
-  // Spread each cloud frame over this many animation frames (in bands), showing a blend of the last two finished
-  // frames meanwhile: no frame ever carries a whole cloud frame's work, at the cost of motion and lights lagging.
+  // After the initial whole frame, spread each cloud frame across animation frames (in bands), blending the last
+  // two finished frames meanwhile. More bands reduce work per animation frame, at the cost of motion/light delay.
   amortize:control('Frames per cloud frame (1 = whole frames)',1,16,1,1,'Rendering'),
   resolutionLimit:control('Maximum resolution',256,4096,64,1280,'Rendering'),
   resolutionScale:control('Render scale',.1,2,.05,1,'Rendering'),

@@ -14,5 +14,8 @@ for(let run=0;run<2;run++){
 }
 assert.deepEqual(simulations[0],simulations[1],'An explicit seed reproduces the storm');
 const shader=CloudScene.createFragmentShader('return cloudBase(p) * uAmount;', {uAmount:.7});assert(shader.includes('uniform float uAmount;'));assert(shader.includes('float cloudBase(vec3 p)'));assert.throws(()=>CloudScene.createFragmentShader(null,{'bad-name':1}));
+for(const name of ['uLights','uBolts','uBoltColors'])assert.throws(()=>CloudScene.createFragmentShader(null,{[name]:1}),/unique/,'Built-in array uniforms cannot be replaced');
+assert.throws(()=>CloudScene.createFragmentShader(null,{uHoles:new Array(3)}),/finite/);
+const orderA=new Lightning(null,{seed:77,interval:1200,randomness:.2}),orderB=new Lightning(null,{randomness:.2,interval:1200,seed:77});assert.deepEqual(orderA.getState(),orderB.getState(),'Seeded construction is independent of option key order');
 assert.equal(CloudControls.quality.medium.resolutionLimit,1280);assert.equal(CloudControls.quality.medium.raySteps,40);assert(CloudControls.scene.raySteps.max>=64);
 console.log('PASS randomized delay/origins, reproducible seeds, manual/off modes, custom density shaders, and public control metadata.');

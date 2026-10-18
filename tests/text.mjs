@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 import vm from 'node:vm';
-import {CloudText,CloudVolume} from '../src/index.js';
+import {CloudText,CloudVolume,CloudControls,CloudTimes} from '../src/index.js';
 let contexts=0,draws=0,id=0,now=0,gpu=true,lost=false,submitCost=0,software=false;const contextAttributes=[];
 const frames=new Map(),uniforms={},textureOps=[];
 const gl=new Proxy({}, {get(_,key){
@@ -35,8 +35,10 @@ class Element {
 const observers=[];
 class Intersection {constructor(callback){this.callback=callback;observers.push(this);}observe(){}unobserve(){}disconnect(){}emit(target,visible){this.callback([{target,isIntersecting:visible}]);}}
 const mutations=[];class Mutation {constructor(callback){this.callback=callback;mutations.push(this);}observe(){}disconnect(){this.dead=true;}}
+const media=[];let reducedMotion=false;
+class Motion {constructor(){this.matches=reducedMotion;this.listeners=[];media.push(this);}addEventListener(type,fn){if(type==='change')this.listeners.push(fn);}emit(value){this.matches=value;for(const fn of this.listeners)fn({matches:value});}}
 const view={innerWidth:1200,innerHeight:800,scrollY:0,listeners:{},IntersectionObserver:Intersection,MutationObserver:Mutation,
- getComputedStyle:element=>({display:'block',position:element.style.getPropertyValue('position')||'static',visibility:'visible',color:'#ffffff',fontSize:element.fontSize,fontWeight:'700',fontStyle:'italic',fontFamily:'Georgia',direction:'ltr',textTransform:'none'}),matchMedia:()=>({matches:false,addEventListener(){}}),addEventListener(key,fn){(this.listeners[key]??=[]).push(fn);}};
+ getComputedStyle:element=>({display:'block',position:element.style.getPropertyValue('position')||'static',visibility:'visible',color:'#ffffff',fontSize:element.fontSize,fontWeight:'700',fontStyle:'italic',fontFamily:'Georgia',direction:'ltr',textTransform:'none'}),matchMedia:()=>new Motion(),addEventListener(key,fn){(this.listeners[key]??=[]).push(fn);}};
 const document={defaultView:view,hidden:false,listeners:{},createElement:tag=>{const e=new Element(tag);e.ownerDocument=document;return e;},createTextNode:nodeValue=>({nodeType:3,nodeValue,parentElement:null,ownerDocument:document}),addEventListener(key,fn){(this.listeners[key]??=[]).push(fn);},createTreeWalker(element){const nodes=[];function walk(e){for(const n of e.childNodes)if(n.nodeType===3)nodes.push(n);else walk(n);}walk(element);let i=0;return{nextNode:()=>nodes[i++]||null};},createRange(){return{setStart(node,index){this.node=node;this.start=index;},setEnd(_,index){this.end=index;},getBoundingClientRect(){const r=this.node.parentElement.getBoundingClientRect();return{left:r.left+this.start*24,right:r.left+this.end*24,top:r.top,bottom:r.top+48,width:(this.end-this.start)*24,height:48};}};}};
 document.head=document.createElement('head');
 globalThis.document=document;globalThis.requestAnimationFrame=fn=>{const n=++id;frames.set(n,fn);return n;};globalThis.cancelAnimationFrame=n=>frames.delete(n);Object.defineProperty(globalThis,'performance',{value:{now:()=>now},configurable:true});
@@ -46,8 +48,10 @@ const first=text('One cloud'),second=text('Another cloud',240),below=text('Below
 first.style.setProperty('touch-action','pan-y');
 const a=new CloudText([first,below],{formationDuration:.4,idleFps:0}),b=new CloudText(second,{formationDuration:.4,idleFps:0});
 assert.throws(()=>new CloudText(first),/already/);assert.throws(()=>a.setOptions({fps:NaN}));assert.throws(()=>a.setOptions({timeOfDay:'invalid'}));assert.throws(()=>a.setOptions({physics:{madeUp:1}}));
+assert.throws(()=>a.setOptions({quality:'toString'}));assert.throws(()=>a.setOptions({physics:{toString:1}}));
+assert.throws(()=>a.puff(NaN,0));assert.throws(()=>a.stir(0,0,Infinity));assert.throws(()=>a.gust(NaN));
 for(let t=16;t<1000;t+=16)pump(t);
-assert.equal(contextAttributes[0].depth,false);assert.equal(contextAttributes[0].failIfMajorPerformanceCaveat,true);assert.equal(contexts,1,'Separate CloudText instances share a single WebGL context');assert.equal(a.getPerformance().cachedLayers,2,'Offscreen text does not allocate a GPU layer');assert.equal(first.childNodes[0],original,'The semantic text node is retained');assert(first.classList.contains('cloud-kit-text-ready'));assert.equal(first.childNodes[1].attributes['aria-hidden'],'true');assert.equal(frames.size,0,'Idle rate zero stops the animation loop after formation');
+assert.equal(contextAttributes[0].depth,false);assert.equal(contextAttributes[0].failIfMajorPerformanceCaveat,true);assert.equal(contexts,1,'Separate CloudText instances share a single WebGL context');assert.equal(a.getPerformance().cachedLayers,2,'Offscreen text does not allocate a GPU layer');assert.equal(first.childNodes[0],original,'The semantic text node is retained');assert(first.classList.contains('puff-text-ready'));assert.equal(first.childNodes[1].attributes['aria-hidden'],'true');assert.equal(frames.size,0,'Idle rate zero stops the animation loop after formation');
 const beforeDraws=draws;observers[0].emit(first,false);a.puff(undefined,undefined,1,first);for(let t=1000;t<1100;t+=16)pump(t);assert.equal(draws,beforeDraws,'Offscreen interaction queues without rendering');observers[0].emit(first,true);pump(1120);assert(draws>beforeDraws);
 a.setPlayMode(true);assert.equal(first.style.getPropertyValue('touch-action'),'none');a.setPaused(true);assert.equal(first.style.getPropertyValue('touch-action'),'pan-y','Pause restores native scrolling');a.setPaused(false);a.setPlayMode(true);a.setOptions({interactive:false});assert.equal(a.playMode,false);assert.equal(first.style.getPropertyValue('touch-action'),'pan-y');a.setOptions({interactive:true});
 const entry=a.entries[0],node=first.childNodes[0];node.nodeValue='New cloud';mutations[0].callback([{type:'characterData',target:node}]);assert(entry.maskDirty);pump(1200);assert.equal(first.childNodes[0],node);
@@ -58,18 +62,124 @@ a.setText('Changed with the API');pump(1230);assert.equal(first.childNodes[0].no
 for(let t=1240;t<1300;t+=16)pump(t);
 const pointer=(type,extra={})=>{now+=20;for(const fn of document.listeners[type]||[])fn({clientX:100,clientY:55,pointerType:'touch',pointerId:5,button:0,target:first,preventDefault(){this.prevented=true;},...extra});};
 a.entries[0].effects=[];pointer('pointerdown');pointer('pointerup');assert.equal(entry.effects.length,1,'A quick touch queues a soft puff');pointer('pointerdown');pointer('pointermove',{clientX:145});pointer('pointerup',{clientX:145});assert.equal(entry.effects.length,1,'A swipe used for scrolling does not also tap');
+pointer('pointerdown');pointer('pointerup',{clientX:220});assert.equal(entry.effects.length,1,'A distant release without a move event is not a tap');
 observers[0].emit(below,true);pump(1350);assert.equal(a.getPerformance().cachedLayers,3,'Entering the viewport allocates the new layer lazily');
-b.destroy();assert.equal(a.getPerformance().rendererCount,1,'Destroying one owner keeps another owner alive');a.destroy();assert.equal(frames.size,0);assert(!first.classList.contains('cloud-kit-text-ready'));assert.equal(first.style.getPropertyValue('position'),'');assert.equal(first.style.getPropertyValue('touch-action'),'pan-y');assert.equal(first.childNodes.length,1,'Destroy removes only the decorative canvas');assert.equal(document.head.childNodes.length,0);assert(mutations.every(m=>m.dead));
+b.destroy();assert.equal(a.getPerformance().rendererCount,1,'Destroying one owner keeps another owner alive');a.destroy();assert.equal(frames.size,0);assert(!first.classList.contains('puff-text-ready'));assert.equal(first.style.getPropertyValue('position'),'');assert.equal(first.style.getPropertyValue('touch-action'),'pan-y');assert.equal(first.childNodes.length,1,'Destroy removes only the decorative canvas');assert.equal(document.head.childNodes.length,0);assert(mutations.every(m=>m.dead));
+// A zero-size target stays quiet and can be made visible without recreating its owner.
+const hiddenElement=text('Initially hidden');hiddenElement.rect.width=0;hiddenElement.rect.height=0;
+const hiddenText=new CloudText(hiddenElement,{formationDuration:0,idleFps:0,fps:60});const hiddenDraws=draws;pump(1360);assert.equal(draws,hiddenDraws);assert.equal(frames.size,0,'Zero-size text must not run a perpetual formation loop');
+hiddenElement.rect.width=360;hiddenElement.rect.height=100;hiddenText.refresh();pump(1370);assert(hiddenElement.classList.contains('puff-text-ready'));
+hiddenText.handlePointer('pointermove',{clientX:90,clientY:50,pointerType:'mouse',target:hiddenElement});pump(1388);assert.equal(uniforms.uPointPower[0],1);
+hiddenText.handlePointer('pointermove',{clientX:900,clientY:500,pointerType:'mouse',target:hiddenElement});pump(1406);assert.equal(uniforms.uPointPower[0],0,'Leaving idle text clears its pointer light');
+hiddenText.setPlayMode(true);lost=true;pump(1407);hiddenText.refresh();pump(1408);assert(hiddenText.error);assert.equal(hiddenElement.style.getPropertyValue('touch-action'),'','A renderer failure restores native touch handling');assert.equal(hiddenText.getPerformance().cachedLayers,0);hiddenText.refresh();pump(1409);assert.equal(frames.size,0,'Failed text does not retry on every mutation');lost=false;hiddenText.destroy();
 // Public shared layers retain independent fields and time, even after gusts.
 const volume=new CloudVolume({sharedBuffer:true}),mask=document.createElement('canvas');mask.width=140;mask.height=70;
+assert.throws(()=>volume.configure({toString:1}));
+const pausedLayer=volume.createLayer(mask,{scale:32});volume.gustLayer(pausedLayer,.5);const pausedUploads=textureOps.filter(call=>call[0]==='texSubImage2D').length;
+volume.renderLayer(pausedLayer,0,true,{active:false},{simulate:false});assert.equal(textureOps.filter(call=>call[0]==='texSubImage2D').length,pausedUploads+1,'A gust uploads changed density even when simulation is paused');volume.releaseLayer(pausedLayer);
 const l1=volume.createLayer(mask,{scale:32}),l2=volume.createLayer(mask,{scale:32});const pristine=volume.layers.get(l2).state.field.slice();volume.gustLayer(l1,1);volume.renderLayer(l1,.02,false,{active:false,segments:[]},{formation:.5});assert.deepEqual(volume.layers.get(l2).state.field,pristine,'Weathering one layer does not change another');volume.renderLayer(l2,1,false,{active:false,segments:[]},{simulate:false});assert.equal(volume.layers.get(l2).state.time,1,'Idle noise advances without a CPU physics step');const damaged=volume.layers.get(l1).state.field.reduce((sum,v)=>sum+v,0);volume.recoverLayer(l1,8);assert(volume.layers.get(l1).state.field.reduce((sum,v)=>sum+v,0)>damaged,'Offscreen relaxation restores disturbed text without replaying hidden frames');assert.deepEqual(volume.layers.get(l2).state.field,pristine);const scaled=volume.renderLayer(l2,0,true,{active:false},{renderScale:.5});assert.equal(scaled.width,70);assert.equal(scaled.height,35);const full=volume.renderLayer(l2,0,true,{active:false});assert.equal(full.width,140,'Resolution overrides never compound or reset physics');assert.deepEqual(volume.layers.get(l2).state.field,pristine);volume.releaseLayer(l1);assert.throws(()=>volume.renderLayer(l1,0,true,{active:false}),/released/);volume.destroy();assert.equal(volume.layers.size,0);
-gpu=false;const native=text('Native fallback');let error;const fallback=new CloudText(native,{onError:e=>error=e});pump(1400);assert(error);assert(!native.classList.contains('cloud-kit-text-ready'));assert.equal(native.childNodes[1].style.getPropertyPriority('display'),'important');assert.equal(frames.size,0);fallback.destroy();
-gpu=true;software=true;let softwareError;const beforeSoftware=contexts,cpuFallback=new CloudText(text('CPU-only text stays native'),{onError:e=>softwareError=e}),anotherCpuFallback=new CloudText(text('Another native heading'));pump(1410);pump(1420);assert(softwareError);assert.equal(contexts,beforeSoftware+1,'An unavailable accelerated renderer is probed only once per document');assert.equal(frames.size,0,'CPU-only text has no repeated animation loop');cpuFallback.destroy();anotherCpuFallback.destroy();software=false;
+gpu=false;const native=text('Native fallback');let error;const fallback=new CloudText(native,{onError:e=>error=e});pump(1410);assert(error);assert(!native.classList.contains('puff-text-ready'));assert.equal(native.childNodes[1].style.getPropertyPriority('display'),'important');assert.equal(frames.size,0);fallback.destroy();
+gpu=true;software=true;let softwareError;const beforeSoftware=contexts,cpuFallback=new CloudText(text('CPU-only text stays native'),{onError:e=>softwareError=e}),anotherCpuFallback=new CloudText(text('Another native heading'));pump(1420);pump(1430);assert(softwareError);assert.equal(contexts,beforeSoftware+1,'An unavailable accelerated renderer is probed only once per document');assert.equal(frames.size,0,'CPU-only text has no repeated animation loop');cpuFallback.destroy();anotherCpuFallback.destroy();software=false;
 gpu=true;submitCost=50;const slow=new CloudText(text('Adaptive clouds'),{formationDuration:0,idleFps:30,minRenderScale:.6,renderBudgetMs:12});
 for(let t=1500;t<11000;t+=100)pump(t);assert.equal(slow.getPerformance().renderScale,.6,'Sustained expensive submission reaches the configured scale floor');
 submitCost=1;for(let t=11000;t<28000;t+=100)pump(t);assert.equal(slow.getPerformance().renderScale,1,'Scale recovers when draw submission has headroom');
 slow.setOptions({adaptiveQuality:0});assert.equal(slow.getPerformance().renderScale,1);slow.destroy();assert.equal(frames.size,0);
+const gestureElement=text('Complete gesture'),gesture=new CloudText(gestureElement,{formationDuration:0,idleFps:0,fps:4,scrollWind:0,pointerEvents:false});pump(28100);
+const gestureEntry=gesture.entries[0],send=(type,x,id=7)=>gesture.handlePointer(type,{clientX:x,clientY:70,pointerType:'touch',pointerId:id,button:0,target:gestureElement});
+const initialDraws=draws;now=28101;send('pointerdown',70);now=28110;send('pointermove',120);send('pointermove',200,9);send('pointerup',200,9);assert(gestureEntry.pointer.down,'Another finger cannot release the active gesture');
+now=28130;send('pointerup',210);assert(!gestureEntry.pointer.active);assert(gestureEntry.pointer.segments.every(s=>s.down),'Queued segments retain their dragging state after release');pump(28150);assert.equal(draws,initialDraws,'Pointer input respects the configured active FPS');
+const gestureState=gesture.manager.volume.layers.get(gestureEntry.layer).state,massBefore=gestureState.field.reduce((n,v)=>n+v,0);pump(28360);assert(gestureState.field.reduce((n,v)=>n+v,0)<massBefore,'Release before draw still applies the complete stroke');
+send('pointerdown',90);send('pointermove',120);gesture.handlePointer('pointercancel',{pointerId:9,pointerType:'touch'});assert(gestureEntry.pointer.down);gesture.handlePointer('pointercancel',{pointerId:7,pointerType:'touch'});assert(!gestureEntry.pointer.down);assert.equal(gestureEntry.pointer.segments.length,0);
+send('pointerdown',90);view.listeners.blur.at(-1)();assert(!gestureEntry.pointer.down,'Losing window focus clears held gestures');
+gesture.handlePointer('pointermove',{clientX:90,clientY:60,pointerType:'mouse',target:gestureElement});assert(gestureEntry.pointer.active);gesture.handlePointer('pointermove',{clientX:90,clientY:60,pointerType:'mouse',target:document.createElement('input')});assert(!gestureEntry.pointer.active,'Entering an interactive control clears pointer lighting');
+gestureElement.style.setProperty('position','relative','important');gesture.destroy();assert.equal(gestureElement.style.getPropertyPriority('position'),'important','Destroy preserves author changes to owned style priorities');assert.equal(frames.size,0);
+let disposal;disposal=new CloudText(text('Dispose during callback'),{formationDuration:0,onFrame:()=>disposal.destroy()});pump(28380);assert.equal(frames.size,0,'Disposing from onFrame cannot reschedule a destroyed manager');
 const scope={window:{},document,AbortController,performance:globalThis.performance,requestAnimationFrame:globalThis.requestAnimationFrame,cancelAnimationFrame:globalThis.cancelAnimationFrame};
-vm.runInNewContext(readFileSync(new URL('../dist/cloud-kit.js',import.meta.url),'utf8'),scope);
-const bundled=new scope.window.CloudKit.CloudText(text('Classic script works'),{formationDuration:0,idleFps:0});pump(28016);assert.equal(bundled.getPerformance().rendererCount,1);assert.equal(bundled.getPerformance().cachedLayers,1);bundled.puff();pump(28050);bundled.destroy();assert.equal(frames.size,0);
-console.log('PASS semantic HTML, one shared GPU renderer, lazy visibility, paused/native touch scroll, tap/swipe distinction, dynamic text, isolated layer physics, idle CPU skipping, cleanup, and native fallback.');
+vm.runInNewContext(readFileSync(new URL('../dist/puff.js',import.meta.url),'utf8'),scope);
+const bundled=new scope.window.PuFF.CloudText(text('Classic script works'),{formationDuration:0,idleFps:0});pump(28400);assert.equal(bundled.getPerformance().rendererCount,1);assert.equal(bundled.getPerformance().cachedLayers,1);bundled.puff();pump(28450);bundled.destroy();assert.equal(frames.size,0);
+const intersection=view.IntersectionObserver;view.IntersectionObserver=undefined;
+const fallbackElement=text('Fallback visibility',1500),fallbackVisibility=new CloudText(fallbackElement,{formationDuration:0,idleFps:0,scrollWind:0});view.IntersectionObserver=intersection;pump(28500);assert.equal(fallbackVisibility.getPerformance().cachedLayers,0);
+fallbackElement.rect.top=30;now=28510;view.scrollY=100;view.listeners.scroll.at(-1)();pump(28520);fallbackVisibility.gust(.8);pump(28525);
+const cached=fallbackVisibility.entries[0].layer,cachedState=fallbackVisibility.manager.volume.layers.get(cached).state,cachedMass=cachedState.field.reduce((n,v)=>n+v,0);
+fallbackElement.rect.top=1500;now=28530;view.scrollY=200;view.listeners.scroll.at(-1)();pump(28540);assert.equal(frames.size,0);
+fallbackElement.rect.top=30;now=31530;view.scrollY=300;view.listeners.scroll.at(-1)();pump(31540);assert.equal(fallbackVisibility.entries[0].layer,cached);assert(cachedState.field.reduce((n,v)=>n+v,0)>cachedMass,'Fallback visibility recovers cached offscreen density');fallbackVisibility.destroy();assert.equal(frames.size,0);
+const wideElement=text('Queued effects follow mask geometry');wideElement.rect.width=2000;
+const wide=new CloudText(wideElement,{maskLimit:256,formationDuration:0,idleFps:0,scrollWind:0});
+wide.puff(1000,50);pump(31600);
+const wideEntry=wide.entries[0],wideVolume=wide.manager.volume;
+let wideState=wideVolume.layers.get(wideEntry.layer).state;
+assert.equal(wideState.puffs[0].x,(1000+wideEntry.pad)*wideEntry.scale,'Effects queued before the first mask use its final scale');
+wide.setOptions({padding:60});wide.puff(1000,50);pump(31650);wideState=wideVolume.layers.get(wideEntry.layer).state;
+assert.equal(wideState.puffs[0].x,(1000+wideEntry.pad)*wideEntry.scale,'Queued CSS coordinates also survive a padding change');
+wide.handlePointer('pointerdown',{clientX:500,clientY:60,pointerType:'touch',pointerId:1,target:wideElement});
+wide.refresh();pump(31700);assert(!wideEntry.pointer.down,'A rebuilt mask cancels gestures in the old coordinate system');
+wide.setPlayMode(true);wide.handlePointer('pointerdown',{clientX:500,clientY:60,pointerType:'touch',pointerId:2,target:wideElement});
+wide.setOptions({pointerEvents:false});assert(!wideEntry.pointer.down,'Changing input ownership cancels the previous gesture');
+for(const key of ['cloudColor','lightColor'])assert.throws(()=>wide.setOptions({[key]:['#ffffff']}),/hex color/);
+wide.destroy();assert.equal(frames.size,0);
+const blankElement=text(' \n '),blank=new CloudText(blankElement);
+const beforeBlankDraws=draws,beforeBlankContexts=contexts;pump(31800);assert.equal(draws,beforeBlankDraws,'Whitespace needs no GPU draw');assert.equal(contexts,beforeBlankContexts,'Whitespace does not initialize a GPU renderer');assert.equal(blank.getPerformance().cachedLayers,0);assert.equal(frames.size,0,'Whitespace does not keep the animation scheduler alive');
+blank.setText('Now visible');pump(31850);assert.equal(blank.getPerformance().cachedLayers,1,'Adding text wakes an empty element');
+blank.setText(' ');pump(31900);assert.equal(blank.getPerformance().cachedLayers,0,'Clearing text releases its cached layer');assert(!blankElement.classList.contains('puff-text-ready'));assert.equal(frames.size,0);
+blankElement.replaceChildren(document.createTextNode('Author mutation'),blank.entries[0].canvas);mutations.at(-1).callback([{type:'characterData',target:blankElement.childNodes[0]}]);pump(31950);assert.equal(blank.getPerformance().cachedLayers,1,'Author mutations wake an empty element too');blank.destroy();
+const recoveryText=new CloudText(text('Recovery can restart'),{physics:{recoveryRate:0},formationDuration:0,idleFps:0,scrollWind:0});pump(32000);recoveryText.gust(.7);
+let recoveryNow=32000;for(let i=0;i<120&&frames.size;i++)pump(recoveryNow+=250);
+const recoveryState=recoveryText.manager.volume.layers.get(recoveryText.entries[0].layer).state,restingMass=recoveryState.field.reduce((n,v)=>n+v,0);
+assert(recoveryState.settled);assert.equal(frames.size,0);
+recoveryText.setOptions({physics:{recoveryRate:1}});pump(recoveryNow+=50);pump(recoveryNow+=50);
+assert(recoveryState.field.reduce((n,v)=>n+v,0)>restingMass,'A text owner with idleFps:0 resumes healing when recovery is enabled');recoveryText.destroy();assert.equal(frames.size,0);
+// Every play/pause/interaction/reduced-motion combination must preserve scrolling.
+for(const reduced of [false,true])for(const paused of [false,true])for(const interactive of [false,true])for(const requested of [false,true]){
+ reducedMotion=reduced;const element=text('Toggle matrix'),owner=new CloudText(element,{interactive});element.style.setProperty('touch-action','pan-y');
+ owner.setPaused(paused);owner.setPlayMode(requested);
+ const playing=requested&&!paused&&interactive&&!reduced;
+ assert.equal(owner.playMode,playing,JSON.stringify({reduced,paused,interactive,requested}));assert.equal(element.style.getPropertyValue('touch-action'),playing?'none':'pan-y');
+ owner.destroy();assert(!owner.playMode,'Destroy exits finger sweeping');assert.equal(element.style.getPropertyValue('touch-action'),'pan-y');assert.equal(frames.size,0);
+}
+reducedMotion=false;const toggleElement=text('Toggle transitions'),toggle=new CloudText(toggleElement,{formationDuration:0,idleFps:0,scrollWind:0});toggleElement.style.setProperty('touch-action','pan-y');pump(recoveryNow+=100);
+toggle.setPlayMode(true);toggle.handlePointer('pointerdown',{clientX:80,clientY:60,pointerType:'touch',pointerId:3,target:toggleElement});toggle.setPlayMode(true);
+assert(toggle.entries[0].pointer.down,'Setting the current play mode again must preserve a held gesture');
+toggle.manager.motion.emit(true);assert.equal(toggle.playMode,false,'Enabling reduced motion exits finger sweeping');assert.equal(toggleElement.style.getPropertyValue('touch-action'),'pan-y');assert(!toggle.entries[0].pointer.down);
+toggle.manager.motion.emit(false);toggle.handlePointer('pointermove',{clientX:80,clientY:60,pointerType:'mouse',target:toggleElement});assert(toggle.entries[0].pointer.active);toggle.setOptions({interactive:false});assert(!toggle.entries[0].pointer.active,'Disabling interactions clears hover state outside play mode too');toggle.setOptions({interactive:true});toggle.setPlayMode(true);lost=true;toggle.refresh();pump(recoveryNow+=100);lost=false;assert(toggle.error);assert(toggle.paused);assert.equal(toggleElement.style.getPropertyValue('touch-action'),'pan-y');
+toggle.setPaused(false);toggle.setPlayMode(true);assert(toggle.paused,'A failed renderer cannot be resumed');assert(!toggle.playMode);assert.equal(toggleElement.style.getPropertyValue('touch-action'),'pan-y','Failed rendering cannot capture scrolling again');toggle.destroy();
+toggle.setPlayMode(true);toggle.setPaused(false);assert(!toggle.playMode);assert.equal(frames.size,0);
+// Exercise the website handlers with the real adapter and DOM/WebGL fixtures.
+const uiIds=new Map(),intervals=new Map();
+class Control extends Element{
+ constructor(tag){super(tag);this.value='';this.checked=false;this.disabled=false;}
+ setAttribute(key,value){super.setAttribute(key,String(value));if(key==='id')uiIds.set(value,this);if(key==='value')this.value=String(value);}
+ set innerHTML(html){this.replaceChildren();for(const match of html.matchAll(/<(input|output)\b[^>]*>/g)){const node=document.createElement(match[1]);for(const attr of match[0].matchAll(/([\w-]+)="([^"]*)"/g))node.setAttribute(attr[1],attr[2]);this.append(node);}}
+ querySelector(tag){return this.childNodes.find(node=>node.tagName===tag.toUpperCase());}
+ fire(type){if(type==='click'&&this.disabled)return;for(const fn of this.listeners[type]||[])fn({target:this});}
+}
+document.createElement=tag=>{const e=new Control(tag);e.ownerDocument=document;return e;};
+for(const match of readFileSync(new URL('../website/index.html',import.meta.url),'utf8').matchAll(/id="([^"]+)"/g)){const node=document.createElement('div');node.setAttribute('id',match[1]);}
+const uiElement=text('Website toggles');uiElement.style.setProperty('touch-action','pan-y');uiIds.set('editableWord',uiElement);document.getElementById=id=>uiIds.get(id);document.querySelectorAll=()=>[uiElement];document.documentElement=document.createElement('html');
+let uiWords;class DemoText extends CloudText{constructor(...args){super(...args);uiWords=this;}}
+const uiWindow={PuFF:{CloudText:DemoText,CloudControls,CloudTimes},matchMedia:()=>new Motion(),listeners:{},addEventListener(type,fn){(this.listeners[type]??=[]).push(fn);}};
+const uiScope={window:uiWindow,document,setInterval:fn=>{intervals.set(++id,fn);return id;},clearInterval:key=>intervals.delete(key)},websiteCode=readFileSync(new URL('../website/demo.js',import.meta.url),'utf8');
+vm.runInNewContext(websiteCode,uiScope);pump(recoveryNow+=100);
+const control=id=>uiIds.get(id),click=id=>control(id).fire('click');
+click('playMode');assert(uiWords.playMode);assert.equal(control('playMode').attributes['aria-pressed'],'true');
+click('pause');assert(uiWords.paused);assert(!uiWords.playMode);assert.equal(control('playMode').textContent,'Finger sweeping: Off');assert.equal(control('pause').textContent,'Resume');assert(control('playMode').disabled,'Paused finger sweeping is visibly unavailable');assert(control('puff').disabled&&control('gust').disabled,'Paused effect buttons must not silently discard clicks');
+click('pause');assert(!uiWords.paused);assert(!control('playMode').disabled);assert(!control('puff').disabled);click('playMode');
+control('interactive').checked=false;control('interactive').fire('change');assert(!uiWords.playMode);assert(control('playMode').disabled);assert.equal(uiElement.style.getPropertyValue('touch-action'),'pan-y');
+control('interactive').checked=true;control('interactive').fire('change');assert(!control('playMode').disabled);click('playMode');
+control('configuration').value=JSON.stringify({interactive:false});click('apply');assert(!control('interactive').checked);assert(!uiWords.playMode);assert(control('playMode').disabled);
+control('configuration').value=JSON.stringify({interactive:true});click('apply');assert(control('interactive').checked);assert(!control('playMode').disabled);
+control('text-adaptiveQuality').value='0';control('text-adaptiveQuality').fire('input');assert.equal(uiWords.getOptions().adaptiveQuality,0);control('text-adaptiveQuality').value='1';control('text-adaptiveQuality').fire('input');assert.equal(uiWords.getOptions().adaptiveQuality,1);
+for(const quality of ['low','high','medium']){control('quality').value=quality;control('quality').fire('change');assert.equal(uiWords.getOptions().quality,quality);pump(recoveryNow+=100);}
+click('playMode');for(const query of media)query.emit(true);assert(!uiWords.playMode);assert(control('playMode').disabled&&control('pause').disabled);assert.equal(uiElement.style.getPropertyValue('touch-action'),'pan-y');
+for(const query of media)query.emit(false);assert(!control('playMode').disabled);assert(!control('pause').disabled);click('playMode');
+lost=true;uiWords.refresh();pump(recoveryNow+=100);lost=false;assert(uiWords.error);assert(!uiWords.playMode);assert(control('playMode').disabled&&control('pause').disabled&&control('puff').disabled&&control('gust').disabled);assert.match(control('status').textContent,/native HTML/);assert.equal(control('playMode').attributes['aria-pressed'],'false');
+uiWindow.listeners.pagehide.at(-1)({persisted:false});assert.equal(intervals.size,0);assert.equal(frames.size,0);
+reducedMotion=true;vm.runInNewContext(websiteCode,uiScope);assert(control('playMode').disabled&&control('pause').disabled,'Initial reduced-motion state is reflected before rendering');pump(recoveryNow+=100);assert(!uiWords.playMode);assert.equal(uiElement.style.getPropertyValue('touch-action'),'pan-y');uiWindow.listeners.pagehide.at(-1)({persisted:false});reducedMotion=false;assert.equal(frames.size,0);
+// External CSS hosts do not inject a style element, including with shared owners.
+assert.equal(document.head.childNodes.length,0);
+const externalA=new CloudText(text('External stylesheet'),{injectStyles:false}),externalB=new CloudText(text('Shared external stylesheet'),{injectStyles:false});
+assert.equal(document.head.childNodes.length,0);assert.throws(()=>externalA.setOptions({injectStyles:true}),/requires a new CloudText/);
+externalA.setOptions(externalA.getOptions());externalA.destroy();externalB.destroy();assert.equal(document.head.childNodes.length,0);
+const externalFirst=new CloudText(text('External first'),{injectStyles:false}),injectedSecond=new CloudText(text('Injected second'));
+assert.equal(document.head.childNodes.length,1,'A later default owner can install the shared stylesheet');
+externalFirst.destroy();injectedSecond.destroy();assert.equal(document.head.childNodes.length,0);assert.equal(frames.size,0);
+console.log('PASS semantic HTML, shared rendering, input ownership, toggle combinations, external styles, mask coordinate changes, visibility, isolated physics, cleanup, and native fallback.');

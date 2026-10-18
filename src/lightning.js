@@ -1,9 +1,9 @@
 import { CloudControls } from './config.js';
 /** Bounded hover lightning. Geometry stays in document coordinates. */
-'use strict';
   const limits=CloudControls.lightning;
   const smooth=t=>{t=Math.max(0,Math.min(1,t));return t*t*(3-2*t);};
 export function Lightning(canvas,options={}){
+    if(options.onStrike!=null&&typeof options.onStrike!=='function')throw new TypeError('onStrike must be a function.');
     const ctx=canvas?.getContext('2d')||null;
     const settings={...Object.fromEntries(Object.entries(limits).map(([k,v])=>[k,v.default])),mode:'random',seed:options.seed??Math.floor(Math.random()*4294967295)};
     let strikes=[],wait=0,width=0,height=0,flash=0,seed=settings.seed>>>0,pending=false,wasEnabled=false;
@@ -12,12 +12,12 @@ export function Lightning(canvas,options={}){
     wait=nextWait();
     function path(a,b){
       const dx=b.x-a.x,dy=b.y-a.y,length=Math.max(1,Math.hypot(dx,dy));
-      const points=[{...a}];
+      const points=[{x:a.x,y:a.y}];
       for(let i=1;i<9;i++){
         const t=i/9,offset=(random()-.5)*Math.min(35,length*.32)*Math.sin(Math.PI*t);
         points.push({x:a.x+dx*t-dy/length*offset,y:a.y+dy*t+dx/length*offset});
       }
-      points.push({...b});return points;
+      points.push({x:b.x,y:b.y});return points;
     }
     function strike(source,targets){
       const nearby=targets.filter(p=>Math.hypot(p.x-source.x,p.y-source.y)<=settings.reach);
@@ -58,10 +58,11 @@ export function Lightning(canvas,options={}){
       if(kind==='interval'||kind==='randomness')wait=nextWait();
       if(kind==='power'&&settings.power===0)this.clear();
     };
-    this.resize=(w,h,dpr)=>{width=w;height=h;if(canvas){canvas.width=Math.round(w*dpr);canvas.height=Math.round(h*dpr);}ctx?.setTransform(dpr,0,0,dpr,0,0);};
+    this.resize=(w,h,dpr)=>{if(![w,h,dpr].every(Number.isFinite)||w<0||h<0||dpr<=0)throw new TypeError('Lightning dimensions and pixel ratio must be finite and nonnegative (positive for pixel ratio).');width=w;height=h;if(canvas){canvas.width=Math.round(w*dpr);canvas.height=Math.round(h*dpr);}ctx?.setTransform(dpr,0,0,dpr,0,0);};
     this.trigger=()=>{if(settings.mode==='off'||settings.power===0)return false;pending=true;return true;};
     this.update=(dt,source,getTargets)=>{
       if(!source.enabled||settings.power===0||settings.mode==='off'){if(wasEnabled)this.clear();wasEnabled=false;return 0;}
+      if(!Number.isFinite(source.x)||!Number.isFinite(source.y)||!Array.isArray(source.color)||source.color.length!==3||!Array.from(source.color).every(Number.isFinite)||source.bounds&&!['x','y','width','height'].every(key=>Number.isFinite(source.bounds[key])))throw new TypeError('Lightning source coordinates, bounds, and RGB color must be finite.');
       wasEnabled=true;dt=Math.max(0,Math.min(.25,Number(dt)||0));
       for(const s of strikes)s.age+=dt;
       strikes=strikes.filter(s=>s.age<s.life);
@@ -104,6 +105,7 @@ export function Lightning(canvas,options={}){
     this.clear=()=>{strikes=[];flash=0;wait=nextWait();pending=false;ctx?.clearRect(0,0,width,height);};
     this.clearOverlay=()=>ctx?.clearRect(0,0,width,height);
     this.getSegments=(max=32)=>{
+      if(!Number.isFinite(max)||max<0)throw new RangeError('Segment limit must be finite and nonnegative.');max=Math.floor(max);
       const segments=[];
       // Round-robin paths lets branches share the fixed shader channel budget.
       for(let i=1;i<10;i++)for(const s of strikes)for(const path of s.paths){
@@ -136,6 +138,8 @@ export function Lightning(canvas,options={}){
       return lights;
     };
     for(const [key,value]of Object.entries(options))if(key!=='onStrike')this.configure(key,value);
+    // Construction order must not change the sequence for the same seed/settings.
+    settings.seed=seed=settings.seed>>>0;wait=nextWait();
     this.getState=()=>({settings:{...settings},strikeCount:strikes.length,flash,nextStrikeIn:Math.max(0,wait),
       pathCount:strikes.reduce((n,s)=>n+s.paths.length,0)});
   }

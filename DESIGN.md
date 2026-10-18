@@ -1,6 +1,6 @@
-# Cloud Kit: clouds for ordinary websites
+# PuFF: clouds for ordinary websites
 
-Cloud Kit targets HTML, CSS, and JavaScript pages: portfolios, lettering, logos, interactive overlays, and atmospheric sections. A framework is optional. The library renders directly with WebGL2 and exposes independent ES modules plus a classic script bundle.
+PuFF targets HTML, CSS, and JavaScript pages: portfolios, lettering, logos, interactive overlays, and atmospheric sections. A framework is optional. The library renders directly with WebGL2 and exposes independent ES modules plus a classic script bundle.
 
 ## What makes the library useful
 
@@ -23,9 +23,9 @@ Cloud Kit targets HTML, CSS, and JavaScript pages: portfolios, lettering, logos,
 | `lightning.js` | Seeded bounded discharge geometry, pulses, and light reservoirs; host supplies its clock |
 | `time.js` | Immutable sky and cloud lighting palettes; no rendering or scheduling |
 | `config.js` | Public control metadata, defaults, and ranges |
-| Portfolio/demo adapters | DOM layout, gestures, scrolling, inspector UI, and host scheduling |
+| Demo adapters | DOM layout, gestures, scrolling, inspector UI, and host scheduling |
 
-The portfolio and inspector are examples, rather than requirements of the renderer. Applications can provide their own interaction handlers, voxel fields, light sources, colors, backgrounds, uniforms, and animation loop.
+The demos and inspector are examples, rather than requirements of the renderer. Applications can provide their own interaction handlers, voxel fields, light sources, colors, backgrounds, uniforms, and animation loop.
 
 ## Existing libraries and the standard to meet
 
@@ -33,7 +33,7 @@ The portfolio and inspector are examples, rather than requirements of the render
 
 [Takram Clouds](https://github.com/takram-design-engineering/three-geospatial/tree/main/packages/clouds) provides volumetric geospatial clouds for Three.js, with temporal upscaling/filtering, cloud shadows, light shafts, and haze. Its plain Three.js API can also run on ordinary web pages.
 
-Cloud Kit's opportunity is straightforward website integration and the specific interaction/authoring workflow above. Neither dependency freedom nor having extra sliders proves better visual quality or speed. Comparisons must use comparable scenes, resolutions, hardware, and quality.
+PuFF's opportunity is straightforward website integration and the specific interaction/authoring workflow above. Neither dependency freedom nor having extra sliders proves better visual quality or speed. Comparisons must use comparable scenes, resolutions, hardware, and quality.
 
 ## What is still required before claiming superiority
 

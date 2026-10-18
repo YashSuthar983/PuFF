@@ -1,10 +1,10 @@
 <!doctype html>
 <html lang="en">
-<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Cloud Kit — sky lab</title><link rel="stylesheet" href="demo.css"></head>
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>PuFF — sky lab</title><link rel="stylesheet" href="demo.css"></head>
 <body>
 <main id="stage"><canvas id="sky" aria-label="Interactive three-dimensional cloud scene"></canvas><div id="textStage" hidden></div></main>
 <aside>
- <header><span class="eyebrow">YASH SUTHAR / CLOUD KIT</span><h1>A sky for anything.</h1><p>Move over the sky or tap to light the clouds from within. Try different atmospheres and shapes.</p></header>
+ <header><span class="eyebrow">YASH SUTHAR / PuFF</span><h1>A sky for anything.</h1><p>Move over the sky or tap to light the clouds from within. Try different atmospheres and shapes.</p></header>
  <div class="row"><label for="preset">Atmosphere</label><select id="preset"><option value="storm">Storm</option><option value="clouds">Soft clouds</option><option value="fog">Fog</option><option value="smoke">Smoke</option></select></div>
  <div class="row"><label for="shape">Shape</label><select id="shape"><option value="layer">Whole sky</option><option value="sphere">An isolated puff</option><option value="ring">Custom cloud ring</option><option value="text">Cloud text</option></select></div>
  <div class="row"><label for="quality">Quality</label><select id="quality"><option value="low">Low</option><option value="medium" selected>Medium</option><option value="high">High</option></select></div>
@@ -15,15 +15,15 @@
  <div id="ranges"></div>
  <div class="actions"><button id="strike">Send a flash</button><button id="pause" aria-pressed="false">Pause</button></div>
  <p id="status" role="status">Cloud text is one shape. A density field can describe any volume.</p>
- <details><summary>Use the library</summary><pre><code>const sky = new CloudKit.CloudScene(canvas, {
+ <details><summary>Use the library</summary><pre><code>const sky = new PuFF.CloudScene(canvas, {
   preset: 'storm', quality: 'medium'
 });
 // Bring your own cloud shape:
-const field = CloudKit.createDensityField(
+const field = PuFF.createDensityField(
   (x,y,z) =&gt; yourDensity(x,y,z)
 );
 sky.setDensityField(field.data, field);</code></pre></details>
- <footer><a href="../showcase/index.html">Feature gallery ↗</a><a href="../../port_v2/index.html">Open portfolio ↗</a><a href="../README.md">API notes ↗</a></footer>
+ <footer><a href="../showcase/index.html">Feature gallery ↗</a><a href="../README.md">API notes ↗</a></footer>
 </aside>
-<script src="../dist/cloud-kit.js?v=0.3.2"></script><script src="demo.js"></script>
+<script src="../dist/puff.js?v=0.3.3"></script><script src="demo.js"></script>
 </body></html>

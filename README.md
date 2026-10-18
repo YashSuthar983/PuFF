@@ -1,6 +1,10 @@
-# Cloud Kit
+# PuFF
 
-A dependency-free WebGL2 cloud library. **Text is one adapter**: the main renderer accepts a procedural atmosphere or a custom three-dimensional density field. The portfolio uses the same source library.
+Interactive clouds, lettering, and storms for the web.
+
+A dependency-free WebGL2 cloud library. **Text is one adapter**: the main renderer accepts a procedural atmosphere or a custom three-dimensional density field.
+
+Licensed under [MIT](LICENSE).
 
 - `CloudScene`: soft cloud layers, isolated puffs, storms, fog, smoke, custom volumes.
 - `CloudText`: attach cloud lettering to semantic HTML, with one shared renderer per document.
@@ -11,46 +15,95 @@ A dependency-free WebGL2 cloud library. **Text is one adapter**: the main render
 
 The storm look is inspired by the supplied reference: blue-white light originates within the volume, optical depth dims it through vapor, and foreground clouds occlude the lightning channels. This is a real-time approximation; presets describe visual appearances, not meteorological simulations.
 
-## Run
+## Install
 
-From `/home/yash/Desktop/Port`:
+```sh
+npm install @yashsuthar/puff
+```
+
+Registry installation requires a published release. Until the first release, run `npm pack` in this checkout and install the resulting `.tgz` in your application with `npm install /path/to/yashsuthar-puff-0.3.3.tgz`.
+
+```js
+import {CloudText, CloudScene} from '@yashsuthar/puff';
+
+const words = new CloudText(document.querySelector('h1'));
+const sky = new CloudScene(document.querySelector('canvas'), {preset:'clouds'});
+// When your page/component unmounts:
+words.destroy();
+sky.destroy();
+```
+
+This package is ESM-only. Named imports allow bundlers to remove unused renderers; there is no CommonJS `require()` entry. Module import is safe during server rendering, but instantiate renderers after the target DOM exists on the client. The runtime has no package dependencies.
+
+For an SSR host, call this function from its client mount hook and register the returned cleanup with the host:
+
+```js
+import {CloudText} from '@yashsuthar/puff';
+
+function mountCloudText(element) {
+  const words = new CloudText(element);
+  return () => words.destroy();
+}
+```
+
+The support target is current stable Chrome, Firefox, and Safari, including their mobile browsers. Rendering requires WebGL2, Canvas 2D, DOM Range, animation frames, and AbortController event listeners. Older browsers and embedded webviews are not a guaranteed support target. Keep a native HTML fallback; validate typography and performance on your actual devices. Automated browser tests use pinned Playwright engines and do not replace real-device testing.
+
+## Develop and run the demos
+
+From this folder:
 
 ```sh
 python3 -m http.server 8000
 ```
 
-Open `http://localhost:8000/cloud-library/website/` for ordinary HTML integration, `http://localhost:8000/cloud-library/showcase/` for the framed feature gallery, `http://localhost:8000/cloud-library/examples/` for the sky lab, `http://localhost:8000/cloud-library/emerald-3d/` for the fully computed glass-award scene ([notes](emerald-3d/README.md)), or `http://localhost:8000/port_v2/` for the portfolio. The classic bundle demo also opens directly from disk. Serve the **project root** because the portfolio imports its sibling library. No install is required.
+Open `http://localhost:8000/website/` for ordinary HTML integration, `http://localhost:8000/showcase/` for the framed feature gallery, or `http://localhost:8000/examples/` for the sky lab. The classic bundle demo also opens directly from disk. No install is required.
 
-After editing source:
+Development uses Node.js 22 or 24. Install the locked development tools and browser engines:
 
 ```sh
-cd cloud-library
-npm run build
-npm test
+npm ci
+npx playwright install chromium firefox webkit
+npm --offline --no-update-notifier run check
 ```
 
-`dist/cloud-kit.js` is generated from `src`. The build also updates the two small portfolio adapters. Keep the library folder beside `port_v2` when copying the portfolio. See [the design scope](DESIGN.md) for module boundaries, the website integration focus, and the remaining work before comparing against other cloud libraries. The package is local and private; it has not been published to npm.
+`dist/puff.js` is generated from `src`, including automatically before packing. See [the design scope](DESIGN.md) for module boundaries and known limits, [the changelog](CHANGELOG.md) for pending changes, and [release steps](RELEASING.md) for owner decisions and publication.
 
-The test suite compiles and links the actual text, scene, and custom-density shaders through surfaceless EGL/GLES3 when a C compiler and EGL/GLES development libraries are available. It reports a skip otherwise. Run `CLOUD_KIT_REQUIRE_GL=1 npm test` to require this check. DOM/WebGL fixture tests cover interaction and lifecycle; they do not measure browser or phone rendering performance.
+`npm test` rebuilds the browser bundle before running the tests. The suite compiles and links the actual text, scene, and custom-density shaders through surfaceless EGL/GLES3 when a C compiler and EGL/GLES development libraries are available. It reports a skip otherwise. Run `PUFF_REQUIRE_GL=1 npm test` to require this check. Numerical tests cover weathering, recovery, frame cadence, and gesture completion. DOM/WebGL fixtures cover interaction and lifecycle; they do not measure browser or phone rendering performance.
+
+`npm run check` runs its nested npm commands offline with update notifications disabled; install the development tools and browsers first. `npm run test:package` installs an actual tarball into a clean consumer, checks exports and TypeScript, and enforces production bundle-size limits. The consumer pack/install checks also run npm offline. `npm run test:browser` checks the installed package in Chromium; set `PUFF_BROWSER=firefox` or `webkit` to select another installed engine. CI covers all three. `PUFF_SOFTWARE_GL=1` lets the browser fixture use real software WebGL by relaxing only the accelerated-context requirement inside the test; it does not change the library's fallback policy. `PUFF_BROWSER_EXECUTABLE=/path/to/chrome` optionally selects a local Chromium executable.
 
 ## Cloud lettering on ordinary HTML
 
 ```html
 <h1 class="cloud-word">Hello, sky.</h1>
-<script src="cloud-library/dist/cloud-kit.js"></script>
+<script src="/vendor/puff.js"></script>
 <script>
-  const words=new CloudKit.CloudText('.cloud-word',{
+  const words=new PuFF.CloudText('.cloud-word',{
     timeOfDay:'dawn',quality:'medium'
   });
   words.puff();
 </script>
 ```
 
-Or import `{CloudText}` from `src/index.js`. The target can be a CSS selector, a single HTML element, or an iterable of elements. Use block or inline-block targets without nested cloud targets. Initially hidden targets are allowed and allocate their mask when shown. All instances in a document share one WebGL2 renderer, while each mask retains its own weathering, vapor, and formation state.
+For this classic-script example, copy `node_modules/@yashsuthar/puff/dist/puff.js` into your site's `/vendor/` assets. The bundle is also exported as `@yashsuthar/puff/dist/puff.js` for tooling that copies or imports it for its `globalThis.PuFF` side effect. Normal ESM applications should use `import {CloudText} from '@yashsuthar/puff'`.
+
+The target can be a CSS selector, a single HTML element, or an iterable of elements. Use block or inline-block targets without nested cloud targets. Initially hidden targets are allowed and allocate their mask when shown. All instances in a document share one WebGL2 renderer, while each mask retains its own weathering, vapor, and formation state.
 
 The original HTML stays in the document: headings, selection, links, keyboard navigation, and accessible text remain available. The canvas is decorative (`aria-hidden`) and cannot intercept clicks. Font changes, resizing, and text mutations rebuild the affected mask. The canvas follows DOM glyph positions, including wrapping, emphasis, spacing, and ordinary horizontal text. Generated pseudo-element content is not part of the mask; advanced ligatures and typography need browser-specific visual validation. Shadow DOM is currently rejected explicitly.
 
 Text overlays are transparent. Supply any CSS background beneath them, independently of the cloud palette. The adapter temporarily sets relative positioning on static targets and stores a selection color; `destroy()` removes its canvas, observers, owned styles, and GPU layers. When WebGL2 is unavailable, or rendering fails, the native HTML remains visible and `onError` reports the failure.
+
+### Content Security Policy
+
+By default CloudText injects one shared stylesheet. For a host that disallows inline styles, load the exported stylesheet through your bundler (or copy it into your site's assets and use a permitted `<link rel="stylesheet">`), then disable injection on **every** CloudText instance:
+
+```js
+import '@yashsuthar/puff/text.css';
+import {CloudText} from '@yashsuthar/puff';
+const words = new CloudText('h1', {injectStyles:false});
+```
+
+Use a production CSS extraction pipeline that produces an external stylesheet allowed by your policy; a development bundler that injects style tags still needs its own CSP configuration. `injectStyles` is construction-only. The external stylesheet belongs to the host and remains loaded after `destroy()`.
 
 ```js
 const words=new CloudText(document.querySelectorAll('[data-cloud]'),{
@@ -79,7 +132,7 @@ words.destroy();
 
 For application-owned gesture arbitration, set `pointerEvents:false` and forward events with `handlePointer('pointermove',event)` (also accepts `pointerdown`, `pointerup`, and `pointercancel`). Forwarded touch events sweep without generating an automatic tap; call `puff()` explicitly for taps. `stir(x,y,strength,target)` accepts the same element-local CSS coordinates as `puff()`. `reformOnEnter:true` makes returning text condense again, while recovering its density state offscreen. Defaults retain automatic input and preserve completed formation on return.
 
-`setLighting({lit,shade,direction,glare,glareTint})` supplies host lighting without rebuilding masks. `setLights(lights)` accepts up to four light sources in viewport CSS coordinates, choosing the strongest overlapping source for each shallow text volume. Each light has `x`, `y`, `strength`, optional `height`, `reach` (CSS pixels), `radius` (scene units converted using viewport height), `color`, and `glow`. Updating sources redraws affected visible words; removing them clears previous illumination. The portfolio uses these APIs to illuminate text from its shared lightning actor. A text volume still samples one local source per draw.
+`setLighting({lit,shade,direction,glare,glareTint})` supplies host lighting without rebuilding masks. `setLights(lights)` accepts up to four light sources in viewport CSS coordinates, choosing the strongest overlapping source for each shallow text volume. Each light has `x`, `y`, `strength`, optional `height`, `reach` (CSS pixels), `radius` (scene units converted using viewport height), `color`, and `glow`. Updating sources redraws affected visible words; removing them clears previous illumination. A text volume still samples one local source per draw.
 
 `setWind({x,y,strength})` supplies a continuous breeze using CSS-pixel velocity and strength 0–2; `setWind(null)` restores scroll-derived wind. This transient source is independent of the sky renderer and is not included in settings export.
 
@@ -87,9 +140,11 @@ Ordinary touch swipes retain native scrolling and never also produce a tap puff.
 
 The scheduler draws at most one text element per animation frame. `fps` is the requested active cadence per element, `idleFps` the resting cadence (0 disables idle animation); many visible elements share that budget and may render less frequently. Settled masks skip CPU advection while their GPU billows can still animate. Only visible elements allocate layers; the cache evicts old offscreen layers when it reaches 32 (visible layers are retained). An evicted element recreates its mask on return. `maskLimit` bounds each mask's longest side (default 2048); the quality profile caps render output independently.
 
+Pointer redraws respect `fps`; configuration and layout changes can redraw immediately. Weathering continues until density and vapor settle within texture-byte precision, so slow recovery settings also work with `idleFps:0`. `recoveryRate:0` preserves the damaged lettering. Native touch swipes never generate sweep segments; completed mouse or play-mode strokes retain their drag state until drawn, even when released between frames.
+
 `adaptiveQuality` uses measured CPU submission time, including the canvas copy, to adjust the per-element render scale between `minRenderScale` and 1, without recreating density or slowing formation. It gradually recovers with headroom. It is **not a GPU timer or whole-page FPS measurement**. Disable it for fixed resolution. `getPerformance()` reports shared renderer/cache/draw counts, owned element visibility, minimum owned render scale, last CPU submission time, and any rendering error. Real hardware benchmarks remain necessary.
 
-`getOptions()` returns detached JSON-compatible options; callbacks are omitted. `CloudControls.text` exports the scalar metadata used by the [HTML adapter demo](website/index.html). Full physics metadata is in `CloudControls.volume`. Quality profiles for this mask adapter use 16/24/36 ray samples with 640/1000/1600px width ceilings, separately from the general scene renderer's profiles.
+`getOptions()` returns detached JSON-compatible options; callbacks are omitted. `CloudControls.text` exports the scalar metadata used by the HTML adapter demo (`website/` in the repository checkout). Full physics metadata is in `CloudControls.volume`. Quality profiles for this mask adapter use 16/24/36 ray samples with 640/1000/1600px width ceilings, separately from the general scene renderer's profiles.
 
 ## A cloud scene
 
@@ -97,9 +152,9 @@ Classic script:
 
 ```html
 <canvas id="sky" style="width:100%;height:100vh"></canvas>
-<script src="cloud-library/dist/cloud-kit.js"></script>
+<script src="/vendor/puff.js"></script>
 <script>
-  const sky = new CloudKit.CloudScene(document.querySelector('#sky'), {
+  const sky = new PuFF.CloudScene(document.querySelector('#sky'), {
     preset: 'storm', quality: 'medium', color: '#8edaff'
   });
 </script>
@@ -108,11 +163,13 @@ Classic script:
 Or ES modules:
 
 ```js
-import {CloudScene, createDensityField} from './cloud-library/src/index.js';
+import {CloudScene, createDensityField} from '@yashsuthar/puff';
 const sky = new CloudScene(canvas, {preset:'clouds', shape:'sphere'});
 ```
 
 Size the canvas with CSS. The renderer observes size changes; `resize(width,height)` sets explicit dimensions in CSS pixels. By default it owns its animation loop and pointer listeners. Hover mode uses mouse movement and touch placement for discharge origins without capturing touch or preventing scrolling. Random mode works independently of a cursor. Lightning is initially enabled only by the storm preset. `StormClouds` is a convenience subclass defaulting to that preset.
+
+`interactive`, `autoStart`, `densityShader`, `powerPreference`, and `failIfMajorPerformanceCaveat` are construction-only. Changing them through `setOptions` or `setTimeOfDay` throws; use `start()` / `stop()` for scheduling and construct a new scene to change input ownership or context settings. Unchanged construction values from a saved `getOptions()` object may be reapplied.
 
 `setOptions({preset:'fog'})` applies that preset's density, ambient light, exposure, colors, and lightning default. Other values in the same patch override the preset. `shape:'layer'` fills the sky; `'sphere'` confines procedural clouds to an isolated puff.
 
@@ -124,8 +181,8 @@ Size the canvas with CSS. The renderer observes size changes; `resize(width,heig
 | `exposure` | 0.3–3, output brightness |
 | `drift` | 0–2, animation speed |
 | `cloudColor`, `background` | `#rrggbb` or normalized RGB array |
-| `quality` | auto (default): cpu on software WebGL, low on phones / tablets / ≤4 GB or ≤4 cores, medium otherwise; cpu: 14 ray steps / 15fps / 480px; low: 20 / 15 / 800px; medium: 40 / 24 / 1280px; high: 64 / 30 / 1920px |
-| `resolutionScale` | 0.25–2, render pixel multiplier within the resolution ceiling |
+| `quality` | auto (default): cpu on software WebGL, low on phones / tablets / ≤4 GB or ≤4 cores, medium otherwise; cpu: 10 ray steps / 30fps / 480px with 8 rendering bands; low: 20 / 15 / 800px; medium: 40 / 24 / 1280px; high: 64 / 30 / 1920px |
+| `resolutionScale` | 0.1–2, render pixel multiplier within the resolution ceiling |
 | `color` | internal lightning color |
 | `lightningPower` | 0–2; 0 disables discharges |
 | `boltReach` | 40–500 CSS pixels |
@@ -133,9 +190,9 @@ Size the canvas with CSS. The renderer observes size changes; `resize(width,heig
 | `interval`, `afterglow` | 600–30000ms, 100–2000ms |
 | `cloudGlow` | 0–2, cloud illumination independent of visible bolt strength |
 
-The profile is a starting point. `raySteps` (8–96), `resolutionLimit` (256–4096), `pixelRatio` (0.5–2), and `fps` (4–60) are independent overrides. Resolution also respects the GPU renderbuffer limit. Selecting a quality profile applies its three defaults; overrides in the same patch win. Pick a profile instead of `auto` to choose it manually.
+The profile is a starting point. `raySteps` (4–96), `resolutionLimit` (256–4096), `pixelRatio` (0.5–2), and `fps` (4–60) are independent overrides. Resolution also respects the GPU renderbuffer limit. Selecting a quality profile applies all its rendering defaults; overrides in the same patch win. Pick a profile instead of `auto` to choose it manually.
 
-Without a usable GPU, browsers that still offer WebGL draw it in software on the CPU (SwiftShader, llvmpipe). `auto` detects that from the renderer name and uses `cpu`: in a software-GL measurement (llvmpipe, 4 threads) a 1280×720 sky took ~260 ms per frame at `medium` and ~14 ms at `cpu`; a lit storm ~520 ms and ~35 ms. Recent Chrome versions refuse software WebGL by default, so there the scene throws on construction (`CloudScene requires WebGL2.`) and the page should keep its fallback.
+Without a usable GPU, browsers that still offer WebGL draw it in software on the CPU (SwiftShader, llvmpipe). `auto` detects that from the renderer name and uses `cpu`. If WebGL2 is unavailable, construction throws (`CloudScene requires WebGL2.`) and the page should keep its fallback. Performance depends on the browser, renderer, scene, and resolution; measure on the devices you support.
 
 `CloudControls.scene`, `.lightning`, `.text`, and `.volume` export the complete scalar control metadata: labels, groups, ranges, steps, and defaults. Build your own editor from this metadata instead of duplicating engine limits.
 
@@ -169,11 +226,13 @@ clouds.setOptions({transparent:true});       // alpha overlay over your own HTML
 
 `backgroundOpacity` ranges 0–1, default 1; `transparent:true` is shorthand for 0 and `false` for 1. Explicit `backgroundOpacity` in the same patch wins. The WebGL canvas supports alpha; partial opacity produces a real cloud alpha channel rather than a painted background. Put your own background beneath it with CSS. Lightning contributes alpha even in otherwise clear sky. Mask clouds already have transparent output.
 
-`CloudTimes` exports immutable palettes (`dawn`, `day`, `noon`, `dusk`, `night`; `sunset` aliases dusk). `setTimeOfDay` changes colors, ambient illumination, and light direction; other options in the same call override that palette. It does not change cloud shape, density, lightning mode, or background opacity. `timeOfDay:'custom'` keeps the current colors. Palettes create no sun, moon, stars, timers, or automatic cycle. The portfolio uses the same palette data for its CSS sky and lettering; the gallery has independent Time palette and Transparent background controls and dedicated demonstration frames.
+`CloudTimes` exports immutable palettes (`dawn`, `day`, `noon`, `dusk`, `night`; `sunset` aliases dusk). `setTimeOfDay` changes colors, ambient illumination, and light direction; other options in the same call override that palette. It does not change cloud shape, density, lightning mode, or background opacity. `timeOfDay:'custom'` keeps the current colors. Palettes create no sun, moon, stars, timers, or automatic cycle. The gallery has independent Time palette and Transparent background controls and dedicated demonstration frames.
 
 ### Performance controls
 
-The renderer still samples density at every ray step, but interpolates between nearby lighting calculations for `shadowStride` samples (default 3). This reduces repeated shadow marches; set it to 1 for full lighting sampling, or increase it for faster, less precise lighting. Mask clouds accept the same `shadowStride` constructor option. The portfolio's shadow spacing control applies to both its sky and lettering.
+The renderer still samples density at every ray step, but interpolates between nearby lighting calculations for `shadowStride` samples (default 3). This reduces repeated shadow marches; set it to 1 for full lighting sampling, or increase it for faster, less precise lighting. Mask clouds accept the same `shadowStride` constructor option.
+
+`octaves` (1–4), `selfShadow` (0–1), `lightSamples` (0–2), and `maxLights` (0–3) control separate shader costs. `amortize` (1–16) spreads a cloud frame across horizontal bands and blends completed frames; 1 draws whole frames. Larger values reduce work per animation frame at the cost of visible motion and lighting delay. The first frame is drawn whole, and three render textures hold the completed and in-progress frames.
 
 `adaptiveQuality:1` is enabled by default. Where `EXT_disjoint_timer_query_webgl2` is supported, completed GPU timing queries adjust render resolution toward `gpuBudgetMs` (default 12ms), down to `minRenderScale` (default 0.5), then gradually restore it when there is headroom. Queries are asynchronous and bounded; the renderer never waits for a GPU result. Devices without the extension (software WebGL, most phones) use the frame cadence instead: frames that arrive well after their slot (`fps`) lower the resolution, and a sustained on-time cadence restores it by 5% every 24 drawn frames. Cadence also reflects other page work, so it is a coarser signal than GPU timing. Set `adaptiveQuality:0` for a manual, fixed resolution (`resolutionScale`). These settings have controls in Effects and the gallery inspector.
 
@@ -224,7 +283,7 @@ renderer.releaseLayer(layer);
 renderer.destroy();
 ```
 
-Layer handles are opaque and belong to their renderer. Copy the returned staging region immediately before another layer renders. `formation` controls the condensation texture (0–1); `renderScale` controls pixels (0.25–1). `simulate:false` advances visual time without advection or density upload for settled masks. Configure lighting, point lights, trail strength, and physics on the renderer before each layer render. `recoverLayer()` performs a bounded, analytic recovery pass using the current physics settings. `destroy()` releases every remaining layer.
+Layer handles are opaque and belong to their renderer. Copy the returned staging region immediately before another layer renders. `formation` controls the condensation texture (0–1); `renderScale` controls pixels (0.25–1). The returned `settled` flag lets hosts stop scheduling physics when no weathering remains. `simulate:false` advances visual time without advection for settled masks; pending gust or recovery changes still upload. Configure lighting, point lights, trail strength, and physics on the renderer before each layer render. `recoverLayer()` performs a bounded, analytic recovery pass using the current physics settings and honors outstanding recovery delays. `destroy()` releases every remaining layer and owned simulation buffers.
 
 ### Your own GPU density
 
@@ -281,7 +340,7 @@ sky.render(2.5, 1/60); // time in seconds, dt for lightning evolution
 The volume adapter takes **any alpha mask**, not text-specific strings. Create the mask using your chosen font, draw a logo or image silhouette, or paint an arbitrary canvas shape. Await fonts before measuring lettering.
 
 ```js
-import {CloudVolume} from './cloud-library/src/index.js';
+import {CloudVolume} from '@yashsuthar/puff';
 const mask=document.createElement('canvas');
 mask.width=900; mask.height=360;
 const ctx=mask.getContext('2d');
@@ -295,7 +354,11 @@ text.render(1/60,false,{active:false,segments:[]});
 
 Call `render(dt,paused,pointer)` from your own loop. `pointer` may supply velocity, swept segments `{ax,ay,bx,by}`, and effects `{kind:'puff'|'stir',x,y,strength}` in mask pixels. `trailStrength`, `vaporDensity`, and `airStrength` remain independent. `gust(strength)` sends wind through the mask; density gathers back. For a movable light, set `pointLight={x,y,height,power,reach,color:[r,g,b],glow}`, mark `dirty=true`, and render. Lighting never changes cloud density. `destroy()` releases adapter-owned GPU objects; an externally supplied formation texture remains caller-owned.
 
-The demo includes presets, an isolated puff, a custom ring, text sweeping, and separate sliders for scene and lightning settings. The portfolio retains its scrolling, formation, mobile gestures, time toggles, and sensitivity controls. The reusable library has no résumé, navigation, scroll controller, or portfolio DOM dependencies.
+For a continuous direct-mask breeze, set `environmentWind={x,y,strength}` using mask-pixel velocity, mark `dirty=true`, and keep rendering while it is active. Set it to `null` to remove the source. CloudText hosts should use `setWind()` with CSS-pixel velocity instead.
+
+Time, coordinates, and strengths must be finite, with nonnegative `dt`. A zero-time draw leaves physics unchanged. Visual time advances by `dt`; each physics step is capped at 0.25 seconds to bound movement after a delayed frame. Each draw handles the most recent 64 sweep segments and 8 effects. Queued segments still apply after `active` becomes false, so retain them through a normal release and clear them on cancellation. Mark segments with `down:true` to retain drag strength after release. Settled direct masks skip simulation and density uploads automatically.
+
+The demo includes presets, an isolated puff, a custom ring, text sweeping, and separate sliders for scene and lightning settings. The reusable library has no résumé, navigation, scroll controller, or portfolio DOM dependencies.
 
 
 ## Configurable mask physics
@@ -313,16 +376,14 @@ const options=cloud.getOptions();
 
 ## Demo websites
 
-The [feature gallery](showcase/index.html) has fourteen individual frames: soft clouds, storms/lightning, fog, smoke, an isolated puff, a ring, a heart, lettering, an arbitrary alpha mask, movable lighting, weather/recovery, transparent overlays, time palettes, and authored GLSL density. Play one frame and adjust its settings in the inspector. The gallery shares one scene renderer and one mask renderer; initial previews are rendered in sequence. It uses only this library's public API and has no portfolio engine dependency.
+The repository's `showcase/` feature gallery has fourteen individual frames: soft clouds, storms/lightning, fog, smoke, an isolated puff, a ring, a heart, lettering, an arbitrary alpha mask, movable lighting, weather/recovery, transparent overlays, time palettes, and authored GLSL density. Play one frame and adjust its settings in the inspector. The gallery shares one scene renderer and one mask renderer; initial previews are rendered in sequence. It uses only this library's public API.
 
-The [sky lab](examples/index.html) is a full-canvas editor. The portfolio's Effects panel uses ordinary readable text, all scalar settings from the metadata, vector controls, and JSON export/import. Its sky defaults to Medium at full render scale, with separate frame-rate and ray-sample controls. Cloud text formation/recovery runs independently of sky drift.
+The repository's `examples/` sky lab is a full-canvas editor. Its sky uses automatic device quality, with separate frame-rate and ray-sample controls. Cloud text formation/recovery runs independently of sky drift. Demo directories are not part of the npm tarball; use the development server above from a repository checkout.
 
 `setPointer(x,y)` places a pointer programmatically in canvas-local coordinates; `clearPointer()` deactivates it and `clearLightning()` removes live discharges. `CloudVolume.lighting` accepts explicit lit/shade RGB colors, light direction, glare, and glare tint for your own mask palette.
 
 Current GPU budgets are three light sources and 32 bolt segments per scene; lightning retains at most two live strikes. These bounds prevent unbounded work. The renderer approximates volumetric light transport and does not reproduce full physical multiple scattering.
 
 ## Constrained devices
-
-The standalone Emerald demos share `demo-performance.js`: accelerated-context checks, bounded power-saver profiles, one host frame clock, offscreen suspension, and a static artwork fallback. Use their Rendering selector or `?render=low` / `?render=static` to inspect these paths. The [performance audit](PERFORMANCE.md) includes reproducible software-GL measurements and clearly separates them from real-device FPS.
 
 `CloudText` requests an accelerated renderer and leaves native HTML visible if the browser rejects it. The document caches that initial renderer failure, so many text owners do not repeatedly probe for WebGL. Direct scene/mask adapters expose `failIfMajorPerformanceCaveat` and `powerPreference` at construction; hosts choose their own fallback. These are context-creation options, not live uniform settings. The default framebuffer does not allocate unused depth storage for fullscreen cloud passes.
