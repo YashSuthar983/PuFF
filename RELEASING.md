@@ -1,13 +1,13 @@
 # Publishing PuFF
 
-The package is prepared for a public scoped release. No registry publication has been performed by this preparation work.
+The first public release is prepared as `@chartara/puff@0.1.0`. Publishing is a separate step.
 
 ## Owner decisions before the first release
 
 1. MIT is selected: the terms are in `LICENSE`, and `package.json` declares `"license": "MIT"`. Include the existing license file when uploading the repository to GitHub.
-2. Create or choose the public source repository. Set `repository` in `package.json` to its actual URL; add the real homepage, issues/support URL, and author metadata. Push this checkout so the checked-in workflow can run. Demo directories stay in the repository; they are not shipped to npm.
-3. Confirm that your npm account can publish under `@yashsuthar`. If not, select a scope you own and update package-name imports in the docs, tests, and helper before releasing. `publishConfig.access` is already public.
-4. Confirm the version. Check `npm view @yashsuthar/puff versions --json`; an E404 is expected if the package does not exist. If needed, run `npm version minor --no-git-tag-version` (or choose an explicit version) and update `CHANGELOG.md`. This preparation corrects types and now rejects changes to creation-only scene settings; document that API tightening.
+2. Create or choose the public source repository. Set `repository` in `package.json` to its actual URL; add the real homepage, issues/support URL, and author metadata. Push this checkout so the checked-in workflow can run. The `examples/` gallery stays in the repository and is excluded from npm.
+3. Confirm that your npm account can publish under `@chartara`. If not, select a scope you own and update package-name imports in the docs, tests, and helper before releasing. `publishConfig.access` is already public.
+4. Confirm the version. Check `npm view @chartara/puff versions --json`; an E404 is expected if the package does not exist. If needed, run `npm version minor --no-git-tag-version` (or choose an explicit version) and update `CHANGELOG.md`. This preparation corrects types and now rejects changes to creation-only scene settings; document that API tightening.
 
 `prepublishOnly` refuses publication until license terms and a repository URL are present, then runs the full verification command. `private` is false so it no longer blocks the intended public release. These checks do not log in, commit, tag, or publish by themselves.
 
@@ -52,8 +52,11 @@ Packing runs the build automatically. Review the file list and install the resul
 
 Then authenticate as the scope owner, review the intended package/version, and publish from this source checkout:
 
+For a first npm release, create your npm account and verify its email before logging in. The configured package is `@chartara/puff`; after login, check that your account owns the `@chartara` scope.
+
 ```sh
 npm login
+npm whoami
 npm publish --access public
 ```
 

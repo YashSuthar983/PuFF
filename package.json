@@ -1,6 +1,6 @@
 {
-  "name": "@yashsuthar/puff",
-  "version": "0.3.3",
+  "name": "@chartara/puff",
+  "version": "0.1.0",
   "private": false,
   "type": "module",
   "description": "Interactive clouds, lettering, and storms for the web.",

@@ -1,4 +1,4 @@
-import {CloudText,CloudScene,CloudVolume,CloudTimes,CloudControls,CloudPresets,StormClouds,Lightning,createDensityField} from '@yashsuthar/puff';
+import {CloudText,CloudScene,CloudVolume,CloudTimes,CloudControls,CloudPresets,StormClouds,Lightning,createDensityField} from '@chartara/puff';
 
 const canvas=document.createElement('canvas');
 const scene=new CloudScene(canvas,{autoStart:false,interactive:false,powerPreference:'low-power'});

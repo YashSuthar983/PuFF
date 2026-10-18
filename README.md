@@ -18,13 +18,13 @@ The storm look is inspired by the supplied reference: blue-white light originate
 ## Install
 
 ```sh
-npm install @yashsuthar/puff
+npm install @chartara/puff
 ```
 
-Registry installation requires a published release. Until the first release, run `npm pack` in this checkout and install the resulting `.tgz` in your application with `npm install /path/to/yashsuthar-puff-0.3.3.tgz`.
+Registry installation requires a published release. Until the first release, run `npm pack` in this checkout and install the resulting `.tgz` in your application with `npm install /path/to/chartara-puff-0.1.0.tgz`.
 
 ```js
-import {CloudText, CloudScene} from '@yashsuthar/puff';
+import {CloudText, CloudScene} from '@chartara/puff';
 
 const words = new CloudText(document.querySelector('h1'));
 const sky = new CloudScene(document.querySelector('canvas'), {preset:'clouds'});
@@ -38,7 +38,7 @@ This package is ESM-only. Named imports allow bundlers to remove unused renderer
 For an SSR host, call this function from its client mount hook and register the returned cleanup with the host:
 
 ```js
-import {CloudText} from '@yashsuthar/puff';
+import {CloudText} from '@chartara/puff';
 
 function mountCloudText(element) {
   const words = new CloudText(element);
@@ -48,7 +48,7 @@ function mountCloudText(element) {
 
 The support target is current stable Chrome, Firefox, and Safari, including their mobile browsers. Rendering requires WebGL2, Canvas 2D, DOM Range, animation frames, and AbortController event listeners. Older browsers and embedded webviews are not a guaranteed support target. Keep a native HTML fallback; validate typography and performance on your actual devices. Automated browser tests use pinned Playwright engines and do not replace real-device testing.
 
-## Develop and run the demos
+## Develop and run the examples
 
 From this folder:
 
@@ -56,7 +56,7 @@ From this folder:
 python3 -m http.server 8000
 ```
 
-Open `http://localhost:8000/website/` for ordinary HTML integration, `http://localhost:8000/showcase/` for the framed feature gallery, or `http://localhost:8000/examples/` for the sky lab. The classic bundle demo also opens directly from disk. No install is required.
+Open `http://localhost:8000/examples/` for the interactive feature gallery. It also opens directly from disk. No install is required to view it.
 
 Development uses Node.js 22 or 24. Install the locked development tools and browser engines:
 
@@ -85,7 +85,7 @@ npm --offline --no-update-notifier run check
 </script>
 ```
 
-For this classic-script example, copy `node_modules/@yashsuthar/puff/dist/puff.js` into your site's `/vendor/` assets. The bundle is also exported as `@yashsuthar/puff/dist/puff.js` for tooling that copies or imports it for its `globalThis.PuFF` side effect. Normal ESM applications should use `import {CloudText} from '@yashsuthar/puff'`.
+For this classic-script example, copy `node_modules/@chartara/puff/dist/puff.js` into your site's `/vendor/` assets. The bundle is also exported as `@chartara/puff/dist/puff.js` for tooling that copies or imports it for its `globalThis.PuFF` side effect. Normal ESM applications should use `import {CloudText} from '@chartara/puff'`.
 
 The target can be a CSS selector, a single HTML element, or an iterable of elements. Use block or inline-block targets without nested cloud targets. Initially hidden targets are allowed and allocate their mask when shown. All instances in a document share one WebGL2 renderer, while each mask retains its own weathering, vapor, and formation state.
 
@@ -98,8 +98,8 @@ Text overlays are transparent. Supply any CSS background beneath them, independe
 By default CloudText injects one shared stylesheet. For a host that disallows inline styles, load the exported stylesheet through your bundler (or copy it into your site's assets and use a permitted `<link rel="stylesheet">`), then disable injection on **every** CloudText instance:
 
 ```js
-import '@yashsuthar/puff/text.css';
-import {CloudText} from '@yashsuthar/puff';
+import '@chartara/puff/text.css';
+import {CloudText} from '@chartara/puff';
 const words = new CloudText('h1', {injectStyles:false});
 ```
 
@@ -144,7 +144,7 @@ Pointer redraws respect `fps`; configuration and layout changes can redraw immed
 
 `adaptiveQuality` uses measured CPU submission time, including the canvas copy, to adjust the per-element render scale between `minRenderScale` and 1, without recreating density or slowing formation. It gradually recovers with headroom. It is **not a GPU timer or whole-page FPS measurement**. Disable it for fixed resolution. `getPerformance()` reports shared renderer/cache/draw counts, owned element visibility, minimum owned render scale, last CPU submission time, and any rendering error. Real hardware benchmarks remain necessary.
 
-`getOptions()` returns detached JSON-compatible options; callbacks are omitted. `CloudControls.text` exports the scalar metadata used by the HTML adapter demo (`website/` in the repository checkout). Full physics metadata is in `CloudControls.volume`. Quality profiles for this mask adapter use 16/24/36 ray samples with 640/1000/1600px width ceilings, separately from the general scene renderer's profiles.
+`getOptions()` returns detached JSON-compatible options; callbacks are omitted. `CloudControls.text` exports the scalar metadata for building CloudText controls. Full physics metadata is in `CloudControls.volume`. Quality profiles for this mask adapter use 16/24/36 ray samples with 640/1000/1600px width ceilings, separately from the general scene renderer's profiles.
 
 ## A cloud scene
 
@@ -163,7 +163,7 @@ Classic script:
 Or ES modules:
 
 ```js
-import {CloudScene, createDensityField} from '@yashsuthar/puff';
+import {CloudScene, createDensityField} from '@chartara/puff';
 const sky = new CloudScene(canvas, {preset:'clouds', shape:'sphere'});
 ```
 
@@ -340,7 +340,7 @@ sky.render(2.5, 1/60); // time in seconds, dt for lightning evolution
 The volume adapter takes **any alpha mask**, not text-specific strings. Create the mask using your chosen font, draw a logo or image silhouette, or paint an arbitrary canvas shape. Await fonts before measuring lettering.
 
 ```js
-import {CloudVolume} from '@yashsuthar/puff';
+import {CloudVolume} from '@chartara/puff';
 const mask=document.createElement('canvas');
 mask.width=900; mask.height=360;
 const ctx=mask.getContext('2d');
@@ -358,7 +358,7 @@ For a continuous direct-mask breeze, set `environmentWind={x,y,strength}` using 
 
 Time, coordinates, and strengths must be finite, with nonnegative `dt`. A zero-time draw leaves physics unchanged. Visual time advances by `dt`; each physics step is capped at 0.25 seconds to bound movement after a delayed frame. Each draw handles the most recent 64 sweep segments and 8 effects. Queued segments still apply after `active` becomes false, so retain them through a normal release and clear them on cancellation. Mark segments with `down:true` to retain drag strength after release. Settled direct masks skip simulation and density uploads automatically.
 
-The demo includes presets, an isolated puff, a custom ring, text sweeping, and separate sliders for scene and lightning settings. The reusable library has no résumé, navigation, scroll controller, or portfolio DOM dependencies.
+The examples gallery includes presets, an isolated puff, a custom ring, text sweeping, and separate sliders for scene and lightning settings. The reusable library has no résumé, navigation, scroll controller, or portfolio DOM dependencies.
 
 
 ## Configurable mask physics
@@ -374,11 +374,11 @@ const options=cloud.getOptions();
 
 `configure()` changes recovery, vapor dissipation/lifetime, sweep size/erosion, tap duration, retained letter density, and released vapor capacity without resetting density. Trail strength, vapor density, and air strength are independent public properties. Mask geometry, render limits, and ray detail use `VolumeOptions`; call `setMask` after changing mask construction options. Text and logo layout remain the host's choice.
 
-## Demo websites
+## Examples
 
-The repository's `showcase/` feature gallery has fourteen individual frames: soft clouds, storms/lightning, fog, smoke, an isolated puff, a ring, a heart, lettering, an arbitrary alpha mask, movable lighting, weather/recovery, transparent overlays, time palettes, and authored GLSL density. Play one frame and adjust its settings in the inspector. The gallery shares one scene renderer and one mask renderer; initial previews are rendered in sequence. It uses only this library's public API.
+The repository's `examples/` feature gallery has fourteen individual frames: soft clouds, storms/lightning, fog, smoke, an isolated puff, a ring, a heart, lettering, an arbitrary alpha mask, movable lighting, weather/recovery, transparent overlays, time palettes, and authored GLSL density. Play one frame and adjust its settings in the inspector. The gallery shares one scene renderer and one mask renderer; initial previews are rendered in sequence. It uses only this library's public API.
 
-The repository's `examples/` sky lab is a full-canvas editor. Its sky uses automatic device quality, with separate frame-rate and ray-sample controls. Cloud text formation/recovery runs independently of sky drift. Demo directories are not part of the npm tarball; use the development server above from a repository checkout.
+The examples stay in the repository and are excluded from the npm tarball. Use the development server above from a repository checkout.
 
 `setPointer(x,y)` places a pointer programmatically in canvas-local coordinates; `clearPointer()` deactivates it and `clearLightning()` removes live discharges. `CloudVolume.lighting` accepts explicit lit/shade RGB colors, light direction, glare, and glare tint for your own mask palette.
 

@@ -12,7 +12,7 @@ assert(Object.hasOwn(engines,engine),'PUFF_BROWSER must be chromium, firefox, or
 const software=process.env.PUFF_SOFTWARE_GL==='1';
 
 await withPackage(async({directory,packageRoot})=>{
- const bundled=await build({absWorkingDir:directory,stdin:{contents:"import * as kit from '@yashsuthar/puff'; globalThis.kit=kit;",resolveDir:directory},bundle:true,format:'esm',write:false});
+ const bundled=await build({absWorkingDir:directory,stdin:{contents:"import * as kit from '@chartara/puff'; globalThis.kit=kit;",resolveDir:directory},bundle:true,format:'esm',write:false});
  const html='<!doctype html><meta charset="utf-8"><link rel="stylesheet" href="/fixture.css"><link rel="stylesheet" href="/text.css"><h1>PuFF library</h1><canvas id="sky"></canvas><script type="module" src="/consumer.js"></script>';
  const assets=new Map([
   ['/consumer.js',['text/javascript',bundled.outputFiles[0].text]],

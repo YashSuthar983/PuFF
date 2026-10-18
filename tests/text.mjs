@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 import vm from 'node:vm';
-import {CloudText,CloudVolume,CloudControls,CloudTimes} from '../src/index.js';
+import {CloudText,CloudVolume} from '../src/index.js';
 let contexts=0,draws=0,id=0,now=0,gpu=true,lost=false,submitCost=0,software=false;const contextAttributes=[];
 const frames=new Map(),uniforms={},textureOps=[];
 const gl=new Proxy({}, {get(_,key){
@@ -35,8 +35,8 @@ class Element {
 const observers=[];
 class Intersection {constructor(callback){this.callback=callback;observers.push(this);}observe(){}unobserve(){}disconnect(){}emit(target,visible){this.callback([{target,isIntersecting:visible}]);}}
 const mutations=[];class Mutation {constructor(callback){this.callback=callback;mutations.push(this);}observe(){}disconnect(){this.dead=true;}}
-const media=[];let reducedMotion=false;
-class Motion {constructor(){this.matches=reducedMotion;this.listeners=[];media.push(this);}addEventListener(type,fn){if(type==='change')this.listeners.push(fn);}emit(value){this.matches=value;for(const fn of this.listeners)fn({matches:value});}}
+let reducedMotion=false;
+class Motion {constructor(){this.matches=reducedMotion;this.listeners=[];}addEventListener(type,fn){if(type==='change')this.listeners.push(fn);}emit(value){this.matches=value;for(const fn of this.listeners)fn({matches:value});}}
 const view={innerWidth:1200,innerHeight:800,scrollY:0,listeners:{},IntersectionObserver:Intersection,MutationObserver:Mutation,
  getComputedStyle:element=>({display:'block',position:element.style.getPropertyValue('position')||'static',visibility:'visible',color:'#ffffff',fontSize:element.fontSize,fontWeight:'700',fontStyle:'italic',fontFamily:'Georgia',direction:'ltr',textTransform:'none'}),matchMedia:()=>new Motion(),addEventListener(key,fn){(this.listeners[key]??=[]).push(fn);}};
 const document={defaultView:view,hidden:false,listeners:{},createElement:tag=>{const e=new Element(tag);e.ownerDocument=document;return e;},createTextNode:nodeValue=>({nodeType:3,nodeValue,parentElement:null,ownerDocument:document}),addEventListener(key,fn){(this.listeners[key]??=[]).push(fn);},createTreeWalker(element){const nodes=[];function walk(e){for(const n of e.childNodes)if(n.nodeType===3)nodes.push(n);else walk(n);}walk(element);let i=0;return{nextNode:()=>nodes[i++]||null};},createRange(){return{setStart(node,index){this.node=node;this.start=index;},setEnd(_,index){this.end=index;},getBoundingClientRect(){const r=this.node.parentElement.getBoundingClientRect();return{left:r.left+this.start*24,right:r.left+this.end*24,top:r.top,bottom:r.top+48,width:(this.end-this.start)*24,height:48};}};}};
@@ -143,37 +143,6 @@ toggle.manager.motion.emit(true);assert.equal(toggle.playMode,false,'Enabling re
 toggle.manager.motion.emit(false);toggle.handlePointer('pointermove',{clientX:80,clientY:60,pointerType:'mouse',target:toggleElement});assert(toggle.entries[0].pointer.active);toggle.setOptions({interactive:false});assert(!toggle.entries[0].pointer.active,'Disabling interactions clears hover state outside play mode too');toggle.setOptions({interactive:true});toggle.setPlayMode(true);lost=true;toggle.refresh();pump(recoveryNow+=100);lost=false;assert(toggle.error);assert(toggle.paused);assert.equal(toggleElement.style.getPropertyValue('touch-action'),'pan-y');
 toggle.setPaused(false);toggle.setPlayMode(true);assert(toggle.paused,'A failed renderer cannot be resumed');assert(!toggle.playMode);assert.equal(toggleElement.style.getPropertyValue('touch-action'),'pan-y','Failed rendering cannot capture scrolling again');toggle.destroy();
 toggle.setPlayMode(true);toggle.setPaused(false);assert(!toggle.playMode);assert.equal(frames.size,0);
-// Exercise the website handlers with the real adapter and DOM/WebGL fixtures.
-const uiIds=new Map(),intervals=new Map();
-class Control extends Element{
- constructor(tag){super(tag);this.value='';this.checked=false;this.disabled=false;}
- setAttribute(key,value){super.setAttribute(key,String(value));if(key==='id')uiIds.set(value,this);if(key==='value')this.value=String(value);}
- set innerHTML(html){this.replaceChildren();for(const match of html.matchAll(/<(input|output)\b[^>]*>/g)){const node=document.createElement(match[1]);for(const attr of match[0].matchAll(/([\w-]+)="([^"]*)"/g))node.setAttribute(attr[1],attr[2]);this.append(node);}}
- querySelector(tag){return this.childNodes.find(node=>node.tagName===tag.toUpperCase());}
- fire(type){if(type==='click'&&this.disabled)return;for(const fn of this.listeners[type]||[])fn({target:this});}
-}
-document.createElement=tag=>{const e=new Control(tag);e.ownerDocument=document;return e;};
-for(const match of readFileSync(new URL('../website/index.html',import.meta.url),'utf8').matchAll(/id="([^"]+)"/g)){const node=document.createElement('div');node.setAttribute('id',match[1]);}
-const uiElement=text('Website toggles');uiElement.style.setProperty('touch-action','pan-y');uiIds.set('editableWord',uiElement);document.getElementById=id=>uiIds.get(id);document.querySelectorAll=()=>[uiElement];document.documentElement=document.createElement('html');
-let uiWords;class DemoText extends CloudText{constructor(...args){super(...args);uiWords=this;}}
-const uiWindow={PuFF:{CloudText:DemoText,CloudControls,CloudTimes},matchMedia:()=>new Motion(),listeners:{},addEventListener(type,fn){(this.listeners[type]??=[]).push(fn);}};
-const uiScope={window:uiWindow,document,setInterval:fn=>{intervals.set(++id,fn);return id;},clearInterval:key=>intervals.delete(key)},websiteCode=readFileSync(new URL('../website/demo.js',import.meta.url),'utf8');
-vm.runInNewContext(websiteCode,uiScope);pump(recoveryNow+=100);
-const control=id=>uiIds.get(id),click=id=>control(id).fire('click');
-click('playMode');assert(uiWords.playMode);assert.equal(control('playMode').attributes['aria-pressed'],'true');
-click('pause');assert(uiWords.paused);assert(!uiWords.playMode);assert.equal(control('playMode').textContent,'Finger sweeping: Off');assert.equal(control('pause').textContent,'Resume');assert(control('playMode').disabled,'Paused finger sweeping is visibly unavailable');assert(control('puff').disabled&&control('gust').disabled,'Paused effect buttons must not silently discard clicks');
-click('pause');assert(!uiWords.paused);assert(!control('playMode').disabled);assert(!control('puff').disabled);click('playMode');
-control('interactive').checked=false;control('interactive').fire('change');assert(!uiWords.playMode);assert(control('playMode').disabled);assert.equal(uiElement.style.getPropertyValue('touch-action'),'pan-y');
-control('interactive').checked=true;control('interactive').fire('change');assert(!control('playMode').disabled);click('playMode');
-control('configuration').value=JSON.stringify({interactive:false});click('apply');assert(!control('interactive').checked);assert(!uiWords.playMode);assert(control('playMode').disabled);
-control('configuration').value=JSON.stringify({interactive:true});click('apply');assert(control('interactive').checked);assert(!control('playMode').disabled);
-control('text-adaptiveQuality').value='0';control('text-adaptiveQuality').fire('input');assert.equal(uiWords.getOptions().adaptiveQuality,0);control('text-adaptiveQuality').value='1';control('text-adaptiveQuality').fire('input');assert.equal(uiWords.getOptions().adaptiveQuality,1);
-for(const quality of ['low','high','medium']){control('quality').value=quality;control('quality').fire('change');assert.equal(uiWords.getOptions().quality,quality);pump(recoveryNow+=100);}
-click('playMode');for(const query of media)query.emit(true);assert(!uiWords.playMode);assert(control('playMode').disabled&&control('pause').disabled);assert.equal(uiElement.style.getPropertyValue('touch-action'),'pan-y');
-for(const query of media)query.emit(false);assert(!control('playMode').disabled);assert(!control('pause').disabled);click('playMode');
-lost=true;uiWords.refresh();pump(recoveryNow+=100);lost=false;assert(uiWords.error);assert(!uiWords.playMode);assert(control('playMode').disabled&&control('pause').disabled&&control('puff').disabled&&control('gust').disabled);assert.match(control('status').textContent,/native HTML/);assert.equal(control('playMode').attributes['aria-pressed'],'false');
-uiWindow.listeners.pagehide.at(-1)({persisted:false});assert.equal(intervals.size,0);assert.equal(frames.size,0);
-reducedMotion=true;vm.runInNewContext(websiteCode,uiScope);assert(control('playMode').disabled&&control('pause').disabled,'Initial reduced-motion state is reflected before rendering');pump(recoveryNow+=100);assert(!uiWords.playMode);assert.equal(uiElement.style.getPropertyValue('touch-action'),'pan-y');uiWindow.listeners.pagehide.at(-1)({persisted:false});reducedMotion=false;assert.equal(frames.size,0);
 // External CSS hosts do not inject a style element, including with shared owners.
 assert.equal(document.head.childNodes.length,0);
 const externalA=new CloudText(text('External stylesheet'),{injectStyles:false}),externalB=new CloudText(text('Shared external stylesheet'),{injectStyles:false});

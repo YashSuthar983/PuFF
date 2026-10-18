@@ -33,6 +33,6 @@ export async function withPackage(check,{staleBundle=false}={}){
   const tarball=(await readdir(directory)).find(name=>name.endsWith('.tgz'));
   await writeFile(join(directory,'package.json'),JSON.stringify({private:true,type:'module'}));
   await runNpm(['install',join(directory,tarball),'--ignore-scripts','--offline','--no-audit','--no-fund','--package-lock=false'],{...options,cwd:directory});
-  return await check({directory,packageRoot:join(directory,'node_modules/@yashsuthar/puff')});
+  return await check({directory,packageRoot:join(directory,'node_modules/@chartara/puff')});
  }finally{await rm(directory,{recursive:true,force:true});}
 }

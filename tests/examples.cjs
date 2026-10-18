@@ -18,7 +18,7 @@ ids.get('lightColor').value='#8edaff';const document={getElementById:id=>ids.get
 const window={devicePixelRatio:1.5,listeners:{},addEventListener(key,fn){this.listeners[key]=fn;}},sandbox={window,document,console,AbortController,Math,Number,JSON,Map,Set,Float32Array,Uint8Array,performance:{now:()=>time},matchMedia:()=>({matches:false,addEventListener(){}}),requestAnimationFrame:fn=>{frames.set(++next,fn);return next;},cancelAnimationFrame:id=>frames.delete(id)};
 vm.createContext(sandbox);const root=path.join(__dirname,'..');vm.runInContext(fs.readFileSync(path.join(root,'dist/puff.js'),'utf8'),sandbox);
 let maskRenderer;const BaseVolume=window.PuFF.CloudVolume;window.PuFF.CloudVolume=class extends BaseVolume{constructor(options){super(options);maskRenderer=this;}};
-vm.runInContext(fs.readFileSync(path.join(root,'showcase/gallery.js'),'utf8'),sandbox);
+vm.runInContext(fs.readFileSync(path.join(root,'examples/gallery.js'),'utf8'),sandbox);
 const pump=t=>{time=t;const callbacks=[...frames.values()];frames.clear();callbacks.forEach(fn=>fn(t));};for(let i=0;i<18;i++)pump(50+i*50);
 assert.equal(ids.get('gallery').children.length,14);assert.equal(contexts,2,'All frames share one scene renderer and one mask renderer');assert.equal(frames.size,0,'Static gallery is quiet');
 assert.equal(maskRenderer.layers.size,3,'Mask cards retain independent layers');const weatherLayer=[...maskRenderer.layers.keys()][2],weatherState=maskRenderer.layers.get(weatherLayer).state,weatherBefore=weatherState.field.reduce((n,v)=>n+v,0);

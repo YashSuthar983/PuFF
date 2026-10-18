@@ -102,7 +102,7 @@ export class Lightning {
 }
 
 export interface CloudTextOptions {
- /** Construction only. Load @yashsuthar/puff/text.css when false. */
+ /** Construction only. Load @chartara/puff/text.css when false. */
  injectStyles?:boolean;
  adaptiveQuality?:number;renderBudgetMs?:number;minRenderScale?:number;
  quality?:'low'|'medium'|'high';fps?:number;idleFps?:number;maskLimit?:number;shadowStride?:number;
