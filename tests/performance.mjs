@@ -18,7 +18,7 @@ const gl=new Proxy({}, {get(_,key){
 }});
 const canvas={width:1,height:1,getContext:()=>gl,getBoundingClientRect:()=>({width:1000,height:600}),addEventListener(){}};
 globalThis.requestAnimationFrame=()=>1;globalThis.cancelAnimationFrame=()=>{};
-const scene=new CloudScene(canvas,{autoStart:false,interactive:false});
+const scene=new CloudScene(canvas,{autoStart:false,interactive:false,quality:'medium'});
 const buffers=scene.lightBuffers;
 for(let i=0;i<70;i++)scene.render(i/24,1/24);
 assert.equal(scene.getOptions().resolutionScale,1,'Automatic adaptation preserves authored settings');
@@ -34,6 +34,33 @@ scene.destroy();assert.equal(pending,0);assert(deleted>0);
 const noTimer=new Proxy(gl,{get(target,key){if(key==='getExtension')return()=>null;return target[key];}});
 const fallback=new CloudScene({...canvas,getContext:()=>noTimer},{autoStart:false});fallback.render();assert.equal(fallback.getPerformance().gpuTimingAvailable,false);assert.equal(fallback.getPerformance().gpuMs,null);assert.equal(fallback.getPerformance().renderScale,1);fallback.destroy();
 console.log('PASS asynchronous GPU timing, bounded queries, disjoint rejection, automatic scale floor/recovery, manual override, buffer reuse, and unsupported-device fallback.');
+
+// Auto quality follows the supplied device, not the machine running the test.
+{
+ const originalNavigator=Object.getOwnPropertyDescriptor(globalThis,'navigator');
+ try{
+  for(const [device,profile] of [
+   [undefined,'medium'],
+   [{hardwareConcurrency:2},'low'],
+   [{hardwareConcurrency:4},'low'],
+   [{hardwareConcurrency:8},'medium'],
+   [{hardwareConcurrency:8,deviceMemory:4},'low'],
+   [{hardwareConcurrency:8,userAgentData:{mobile:true}},'low'],
+  ]){
+   Object.defineProperty(globalThis,'navigator',{configurable:true,value:device});
+   const automatic=new CloudScene({...canvas,getContext:()=>noTimer},{autoStart:false,interactive:false});
+   assert.equal(automatic.getPerformance().profile,profile);
+   assert.deepEqual([automatic.canvas.width,automatic.canvas.height],profile==='low'?[800,480]:[1000,600]);
+   automatic.setOptions({quality:'medium'});
+   assert.deepEqual([automatic.canvas.width,automatic.canvas.height],[1000,600],'Explicit quality overrides device hints');
+   automatic.destroy();
+  }
+ }finally{
+  if(originalNavigator)Object.defineProperty(globalThis,'navigator',originalNavigator);
+  else delete globalThis.navigator;
+ }
+ console.log('PASS automatic quality for low-core, desktop, low-memory, mobile, and missing device hints, plus explicit overrides.');
+}
 
 // Automatic resolution without a GPU timer follows the frame cadence; adaptiveQuality:0 keeps it manual.
 {

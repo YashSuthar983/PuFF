@@ -21,7 +21,7 @@ const canvas={width:1,height:1,getContext:()=>gl,getBoundingClientRect:()=>({wid
 let next=0;const frames=new Map();
 globalThis.requestAnimationFrame=fn=>{frames.set(++next,fn);return next;};globalThis.cancelAnimationFrame=n=>frames.delete(n);
 globalThis.matchMedia=()=>({matches:false,addEventListener(){}});
-const scene=new CloudScene(canvas,{preset:'storm',autoStart:false,interactive:false});
+const scene=new CloudScene(canvas,{preset:'storm',autoStart:false,interactive:false,quality:'medium'});
 assert(scene.options.lightning);assert.equal(scene.options.cloudColor,CloudPresets.storm.cloudColor);
 assert.equal(canvas.width,1000);assert.equal(canvas.height,600);
 const dimensions=[canvas.width,canvas.height],uploads=calls.filter(c=>c[0]==='texImage3D').length;

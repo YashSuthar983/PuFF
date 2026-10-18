@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Fix CI sizing tests on low-core runners and run browser checks under a virtual display for Firefox WebGL2.
 - Brand the library as PuFF: `@yashsuthar/puff`, the `PuFF` browser global, `dist/puff.js`, and `PUFF_*` test settings.
 - Update reduced-motion state from media-query change events instead of reading it during each draw.
 - Run nested verification commands offline with npm update notifications disabled, and build directly in the packing hook.

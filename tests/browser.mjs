@@ -32,7 +32,7 @@ await withPackage(async({directory,packageRoot})=>{
  let browser;
  try{
   await new Promise((resolve,reject)=>{server.once('error',reject);server.listen(0,'127.0.0.1',resolve);});
-  const options={headless:true};
+  const options={headless:process.env.PUFF_HEADED!=='1'};
   if(process.env.PUFF_BROWSER_EXECUTABLE){assert.equal(engine,'chromium','Custom executables are supported only for Chromium');options.executablePath=process.env.PUFF_BROWSER_EXECUTABLE;}
   if(engine==='chromium'&&software)options.args=['--use-angle=swiftshader','--enable-unsafe-swiftshader'];
   browser=await engines[engine].launch(options);

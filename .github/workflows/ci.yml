@@ -37,7 +37,9 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npx playwright install --with-deps ${{ matrix.browser }}
-      - run: npm run test:browser
+      - run: xvfb-run --auto-servernum npm run test:browser
         env:
           PUFF_BROWSER: ${{ matrix.browser }}
           PUFF_SOFTWARE_GL: '1'
+          PUFF_HEADED: '1'
+          LIBGL_ALWAYS_SOFTWARE: '1'

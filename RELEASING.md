@@ -29,9 +29,11 @@ For a headless machine without an accelerated GPU, run browser tests with `PUFF_
 
 ```sh
 PUFF_SOFTWARE_GL=1 npm run test:browser
-PUFF_SOFTWARE_GL=1 PUFF_BROWSER=firefox npm run test:browser
-PUFF_SOFTWARE_GL=1 PUFF_BROWSER=webkit npm run test:browser
+PUFF_SOFTWARE_GL=1 PUFF_HEADED=1 LIBGL_ALWAYS_SOFTWARE=1 PUFF_BROWSER=firefox xvfb-run --auto-servernum npm run test:browser
+PUFF_SOFTWARE_GL=1 PUFF_HEADED=1 LIBGL_ALWAYS_SOFTWARE=1 PUFF_BROWSER=webkit xvfb-run --auto-servernum npm run test:browser
 ```
+
+On Linux CI, Firefox needs a display to create its WebGL2 context. The browser jobs run under Xvfb with `PUFF_HEADED=1` and Mesa software rendering. This still exercises real WebGL2; unavailable contexts fail the test.
 
 `PUFF_BROWSER_EXECUTABLE=/path/to/chrome` can select an existing Chromium executable. A mobile-sized viewport test is layout coverage; it is not an actual phone test.
 
