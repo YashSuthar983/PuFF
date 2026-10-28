@@ -104,7 +104,7 @@ await withPackage(async({directory,packageRoot})=>{
     await page.evaluate(()=>fallback.destroy());
     await page.evaluate(async()=>{
      globalThis.rejectWebGL=false;
-     // 50 contexts in sequence without console warning, and StrictMode same-canvas reuse + loss/restore + parallel compile.
+     // 50 contexts in sequence without console warning, and StrictMode same-canvas reuse + loss/restore + parallel compile + scheduler + beforeRender.
      for(let i=0;i<50;i++){
       const c=document.createElement('canvas');c.style.width='64px';c.style.height='48px';document.body.append(c);
       const s=new kit.CloudScene(c,{autoStart:false,interactive:false,quality:'cpu',raySteps:4});
@@ -112,12 +112,16 @@ await withPackage(async({directory,packageRoot})=>{
       s.destroy();c.remove();
      }
      const strictCanvas=document.querySelector('#sky');
-     let strictFrames=0;
+     let strictFrames=0,beforeCalls=0;
      const s1=new kit.CloudScene(strictCanvas,{autoStart:true,interactive:false,quality:'cpu',raySteps:4});
      s1.destroy();
-     const s2=new kit.CloudScene(strictCanvas,{autoStart:true,interactive:false,quality:'cpu',raySteps:4,onFrame:()=>strictFrames++});
+     let rafCount=0;const origRaf=window.requestAnimationFrame;
+     window.requestAnimationFrame=fn=>{rafCount++;return origRaf(fn);};
+     const s2=new kit.CloudScene(strictCanvas,{autoStart:true,interactive:false,quality:'cpu',raySteps:4,fps:12,beforeRender:e=>{if(!(e.dt>0))throw new Error('Invalid dt in beforeRender');beforeCalls++;},onFrame:()=>strictFrames++});
      await s2.ready;
      await new Promise(resolve=>{const check=()=>{if(strictFrames>0)resolve();else requestAnimationFrame(check);};check();});
+     window.requestAnimationFrame=origRaf;
+     if(beforeCalls!==strictFrames||rafCount>24)throw new Error(`Scheduler check failed: frames=${strictFrames}, before=${beforeCalls}, raf=${rafCount}`);
      s2.destroy();
     });
     assert.deepEqual(errors,[]);

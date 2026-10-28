@@ -2,7 +2,14 @@ import {CloudText,CloudScene,CloudVolume,CloudTimes,CloudControls,CloudPresets,S
 
 const canvas=document.createElement('canvas');
 const scene=new CloudScene(canvas,{autoStart:false,interactive:false,powerPreference:'low-power'});
-scene.setOptions({cloudColor:CloudTimes.day.lit,lightDirection:CloudTimes.day.direction});
+scene.setOptions({
+ cloudColor:CloudTimes.day.lit,lightDirection:CloudTimes.day.direction,pauseWhenHidden:true,
+ beforeRender:({time,dt,width,height})=>{void time;void dt;void width;void height;},
+ onError:error=>{void error.message;},onContextLost:()=>{},onContextRestored:()=>{}
+});
+const readyPromise:Promise<CloudScene>=scene.ready;
+const perf=scene.getPerformance();const isLost:boolean=perf.contextLost;
+void readyPromise;void isLost;
 scene.setTimeOfDay('night',{ambient:.8});
 const words=new CloudText(document.createElement('h2'),{injectStyles:false});
 words.setLighting(CloudTimes.day).setLighting({direction:[.5,-.5,1] as const});
