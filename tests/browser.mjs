@@ -41,6 +41,7 @@ await withPackage(async({directory,packageRoot})=>{
    const page=await browser.newPage({viewport,reducedMotion:'no-preference'});
    page.setDefaultTimeout(30000);
    const errors=[];page.on('pageerror',error=>errors.push(error.message));
+   page.on('console',msg=>{if(/Too many active WebGL contexts/i.test(msg.text()))errors.push(msg.text());});
    await page.addInitScript(allowSoftware=>{
     globalThis.cspViolations=[];
     document.addEventListener('securitypolicyviolation',event=>cspViolations.push(event.violatedDirective));
@@ -100,6 +101,23 @@ await withPackage(async({directory,packageRoot})=>{
     await page.waitForFunction(()=>globalThis.fallbackError);
     assert.deepEqual(await page.evaluate(()=>({ready:document.querySelector('h1').classList.contains('puff-text-ready'),hidden:getComputedStyle(document.querySelector('h1 canvas')).display==='none'})),{ready:false,hidden:true});
     await page.evaluate(()=>fallback.destroy());
+    await page.evaluate(async()=>{
+     globalThis.rejectWebGL=false;
+     // 50 contexts in sequence without console warning, and StrictMode same-canvas reuse + loss/restore.
+     for(let i=0;i<50;i++){
+      const c=document.createElement('canvas');c.style.width='64px';c.style.height='48px';document.body.append(c);
+      const s=new kit.CloudScene(c,{autoStart:false,interactive:false,quality:'cpu',raySteps:4});
+      if(i===49&&!s.render(0,0))throw new Error('50th scene did not render');
+      s.destroy();c.remove();
+     }
+     const strictCanvas=document.querySelector('#sky');
+     let strictFrames=0;
+     const s1=new kit.CloudScene(strictCanvas,{autoStart:true,interactive:false,quality:'cpu',raySteps:4});
+     s1.destroy();
+     const s2=new kit.CloudScene(strictCanvas,{autoStart:true,interactive:false,quality:'cpu',raySteps:4,onFrame:()=>strictFrames++});
+     await new Promise(resolve=>{const check=()=>{if(strictFrames>0)resolve();else requestAnimationFrame(check);};check();});
+     s2.destroy();
+    });
     assert.deepEqual(errors,[]);
     console.log(`PASS ${engine} ${browser.version()} ${viewport.width}px: installed ESM/classic, real scene/text pixels, CSP, toggle combinations, reduced motion, refresh, native fallback, cleanup.`);
    }catch(error){

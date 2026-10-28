@@ -190,6 +190,7 @@ import { CloudControls } from './config.js';
 
 // Per-mask simulation state is isolated; programs and staging buffers are shared.
 const layerKeys=['width','height','cell','gw','gh','radius','target','field','loose','nextLoose','advected','tapVapor','nextTapVapor','advectedTapVapor','tapRemaining','windColumns','windRows','windDiagonals','recovery','brushDistances','brushIndices','vx','vy','bytes','gustSpeed','frameAverage','frames','quality','dirty','densityDirty','settled','lastRecoveryRate','texture','formationTexture','options','outputWidth','outputHeight','puffs','time'];
+const lostExtensions=new WeakMap();
 function validateTime(dt){if(!Number.isFinite(dt)||dt<0)throw new TypeError('dt must be a finite, nonnegative time in seconds.');}
 function validateOptions(options){
  for(const key of ['gridSize','minCell','minRadius','radiusFactor','renderWidth','renderHeight','raySteps','shadowStride'])if(options[key]!==undefined&&(!Number.isFinite(options[key])||options[key]<=0))throw new TypeError(key+' must be finite and positive.');
@@ -210,13 +211,36 @@ function validatePointer(pointer){
 export class CloudVolume {
     constructor(options = {}) {
       validateOptions(options);this.options = {...options};
-      this.layers=new Map();
+      this.layers=new Map();this.generation=0;this.destroyed=false;
       this.physics=Object.fromEntries(Object.entries(CloudControls.volume).map(([key,value])=>[key,value.default]));
       this.configure(options.physics||{});
       this.canvas = document.createElement('canvas');
       const gl = this.canvas.getContext('webgl2', { alpha: true, depth: false, antialias: false, premultipliedAlpha: true, preserveDrawingBuffer: true, failIfMajorPerformanceCaveat: options.failIfMajorPerformanceCaveat??false, powerPreference: options.powerPreference||'default' });
       if (!gl) throw new Error('WebGL2 unavailable');
       this.gl = gl;
+      this.loseExtension=gl.isContextLost()?lostExtensions.get(this.canvas)||null:gl.getExtension('WEBGL_lose_context');
+      if(this.loseExtension)lostExtensions.set(this.canvas,this.loseExtension);
+      this.events=new AbortController();
+      this.program=null;this.buffer=null;this.uniforms={};this.texture=null;this.fullFormationTexture=null;
+      this.gustSpeed = 0; this.time = 0;
+      this.trailStrength = 1;
+      const listen=(name,fn)=>this.canvas.addEventListener?.(name,fn,{signal:this.events.signal});
+      listen('webglcontextlost',e=>{
+        e.preventDefault();this.layers.clear();
+        this.program=null;this.buffer=null;this.texture=null;this.fullFormationTexture=null;
+        this.options.onContextLost?.();
+      });
+      listen('webglcontextrestored',()=>{
+        if(this.destroyed)return;
+        this.generation++;this.layers.clear();this.initGpu();
+        this.options.onContextRestored?.();
+      });
+      if(gl.isContextLost())this.loseExtension?.restoreContext?.();
+      else this.initGpu();
+    }
+    initGpu(){
+      const gl=this.gl;if(gl.isContextLost())return;
+      if(!this.loseExtension){this.loseExtension=gl.getExtension('WEBGL_lose_context');if(this.loseExtension)lostExtensions.set(this.canvas,this.loseExtension);}
       const compile = (type, source) => {
         const shader = gl.createShader(type); gl.shaderSource(shader, source); gl.compileShader(shader);
         if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {const message=gl.getShaderInfoLog(shader);gl.deleteShader(shader);throw new Error(message);}
@@ -228,7 +252,7 @@ export class CloudVolume {
         vs=compile(gl.VERTEX_SHADER,vertex);fs=compile(gl.FRAGMENT_SHADER,fragment);
         gl.attachShader(this.program,vs);gl.attachShader(this.program,fs);gl.linkProgram(this.program);
         if (!gl.getProgramParameter(this.program, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(this.program));
-      }catch(error){gl.deleteProgram(this.program);throw error;}
+      }catch(error){gl.deleteProgram(this.program);this.program=null;throw error;}
       finally{if(vs)gl.deleteShader(vs);if(fs)gl.deleteShader(fs);}
       gl.useProgram(this.program);
       const buffer = this.buffer=gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
@@ -252,8 +276,10 @@ export class CloudVolume {
       gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_T,gl.CLAMP_TO_EDGE);
       gl.texImage2D(gl.TEXTURE_2D,0,gl.R8,1,1,0,gl.RED,gl.UNSIGNED_BYTE,new Uint8Array([255]));
       gl.activeTexture(gl.TEXTURE0);gl.bindTexture(gl.TEXTURE_2D,this.texture);
-      this.gustSpeed = 0; this.time = 0;
-      this.trailStrength = 1;
+      if(this.field&&!this.options.sharedBuffer){
+        gl.texImage2D(gl.TEXTURE_2D,0,gl.RGB8,this.gw,this.gh,0,gl.RGB,gl.UNSIGNED_BYTE,null);
+        this.dirty=true;this.upload();
+      }
     }
     configure(patch={}){
       for(const [key,value]of Object.entries(patch))if(!Object.hasOwn(CloudControls.volume,key)||!Number.isFinite(Number(value)))throw new TypeError('Unknown or invalid cloud physics: '+key);
@@ -284,14 +310,14 @@ export class CloudVolume {
         gl.texImage2D(gl.TEXTURE_2D,0,gl.R8,1,1,0,gl.RED,gl.UNSIGNED_BYTE,new Uint8Array([255]));
         this.formationTexture=formationTexture;
         const layer=Object.freeze({width:mask.width,height:mask.height});
-        this.layers.set(layer,{state:this.captureLayerState(),formation:255,width:this.outputWidth,height:this.outputHeight});return layer;
+        this.layers.set(layer,{state:this.captureLayerState(),formation:255,width:this.outputWidth,height:this.outputHeight,generation:this.generation});return layer;
       }catch(error){if(texture)gl.deleteTexture(texture);if(formationTexture)gl.deleteTexture(formationTexture);throw error;}
       finally{Object.assign(this,saved);gl.activeTexture(gl.TEXTURE0);gl.bindTexture(gl.TEXTURE_2D,this.texture);}
     }
     renderLayer(layer,dt,paused,pointer,{formation=1,simulate=true,renderScale=1}={}){
       validateTime(dt);
       if(!Number.isFinite(formation)||!Number.isFinite(renderScale))throw new TypeError('Formation and render scale must be finite.');
-      const record=this.layers.get(layer);if(!record||this.destroyed)throw new Error('Unknown or released cloud layer.');
+      const record=this.layers.get(layer);if(!record||record.generation!==this.generation||this.destroyed)throw new Error('Unknown or released cloud layer.');
       const saved=this.captureLayerState(),gl=this.gl;
       try{
         Object.assign(this,record.state);
@@ -308,11 +334,11 @@ export class CloudVolume {
       }finally{Object.assign(this,saved);gl.activeTexture(gl.TEXTURE0);gl.bindTexture(gl.TEXTURE_2D,this.texture);}
     }
     gustLayer(layer,strength=1){
-      const record=this.layers.get(layer);if(!record)throw new Error('Unknown or released cloud layer.');
+      const record=this.layers.get(layer);if(!record||record.generation!==this.generation)throw new Error('Unknown or released cloud layer.');
       const saved=this.captureLayerState();try{Object.assign(this,record.state);this.gust(strength);this.captureLayerState(record.state);}finally{Object.assign(this,saved);}
     }
     recoverLayer(layer,elapsed){
-      const record=this.layers.get(layer);if(!record)throw new Error('Unknown or released cloud layer.');
+      const record=this.layers.get(layer);if(!record||record.generation!==this.generation)throw new Error('Unknown or released cloud layer.');
       if(!Number.isFinite(elapsed)||elapsed<0)throw new TypeError('Recovery elapsed time must be finite and nonnegative.');
       const state=record.state,amount=1-Math.exp(-elapsed*this.physics.recoveryRate),fade=Math.exp(-elapsed*this.physics.vaporDissipation),velocityFade=Math.exp(-elapsed*1.35);
       // One relaxation pass, rather than replaying thousands of hidden frames.
@@ -330,7 +356,8 @@ export class CloudVolume {
     }
     releaseLayer(layer){
       const record=this.layers.get(layer);if(!record)return;
-      this.gl.deleteTexture(record.state.texture);this.gl.deleteTexture(record.state.formationTexture);this.layers.delete(layer);
+      if(!this.gl.isContextLost()&&record.generation===this.generation){this.gl.deleteTexture(record.state.texture);this.gl.deleteTexture(record.state.formationTexture);}
+      this.layers.delete(layer);
     }
     setMask(mask,{scale=100,puffiness=1}={}) {
       this.setFormation(mask,scale,puffiness);return this;
@@ -390,12 +417,15 @@ export class CloudVolume {
         this.canvas.width=this.outputWidth;this.canvas.height=this.outputHeight;
       }
       const gl=this.gl;
-      gl.activeTexture(gl.TEXTURE0);gl.bindTexture(gl.TEXTURE_2D,this.texture);
-      gl.texImage2D(gl.TEXTURE_2D,0,gl.RGB8,gw,gh,0,gl.RGB,gl.UNSIGNED_BYTE,null);
+      if(!gl.isContextLost()&&this.texture){
+        gl.activeTexture(gl.TEXTURE0);gl.bindTexture(gl.TEXTURE_2D,this.texture);
+        gl.texImage2D(gl.TEXTURE_2D,0,gl.RGB8,gw,gh,0,gl.RGB,gl.UNSIGNED_BYTE,null);
+        this.upload();
+      }else this.densityDirty=true;
       this.frameAverage=16.667;this.frames=0;this.quality=resolution;this.dirty=true;this.settled=true;this.lastRecoveryRate=this.physics.recoveryRate;
-      this.upload();
     }
     upload() {
+      if(this.gl.isContextLost()||!this.texture){this.densityDirty=true;return;}
       for(let i=0;i<this.field.length;i++) {
         this.bytes[i*3]=Math.round(Math.max(0,Math.min(1,this.field[i]))*255);
         this.bytes[i*3+1]=Math.round(Math.max(0,Math.min(1,this.loose[i]))*255);
@@ -628,9 +658,9 @@ export class CloudVolume {
       }
     }
     render(dt,paused,pointer,frameMs=16.667) {
-      const gl=this.gl;
-      if(this.destroyed||gl.isContextLost()) return false;
       validateTime(dt);
+      const gl=this.gl;
+      if(this.destroyed||gl.isContextLost()||!this.program) return false;
       if(!this.field) return true;
       if(!paused&&dt>0)validatePointer(pointer);
       // A stable, damaged mask can sleep while recovery is disabled. Wake only
@@ -688,10 +718,17 @@ export class CloudVolume {
       return true;
     }
     destroy(){
-      if(this.destroyed)return;this.destroyed=true;
+      if(this.destroyed)return;this.destroyed=true;this.events.abort();
       for(const layer of this.layers.keys())this.releaseLayer(layer);
-      this.gl.deleteTexture(this.texture);this.gl.deleteTexture(this.fullFormationTexture);
-      this.gl.deleteBuffer(this.buffer);this.gl.deleteProgram(this.program);
+      if(!this.gl.isContextLost()){
+        if(this.texture)this.gl.deleteTexture(this.texture);
+        if(this.fullFormationTexture)this.gl.deleteTexture(this.fullFormationTexture);
+        if(this.buffer)this.gl.deleteBuffer(this.buffer);
+        if(this.program)this.gl.deleteProgram(this.program);
+        this.canvas.addEventListener?.('webglcontextlost',e=>e.preventDefault(),{once:true});
+        this.loseExtension?.loseContext?.();
+      }
+      this.texture=null;this.fullFormationTexture=null;this.buffer=null;this.program=null;
       for(const key of layerKeys)if(ArrayBuffer.isView(this[key])||Array.isArray(this[key]))this[key]=null;
     }
   }

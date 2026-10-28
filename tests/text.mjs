@@ -2,11 +2,13 @@ import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 import vm from 'node:vm';
 import {CloudText,CloudVolume} from '../src/index.js';
-let contexts=0,draws=0,id=0,now=0,gpu=true,lost=false,submitCost=0,software=false;const contextAttributes=[];
+let contexts=0,draws=0,id=0,now=0,gpu=true,lost=false,submitCost=0,software=false,lastVolumeCanvas=null;const contextAttributes=[];
 const frames=new Map(),uniforms={},textureOps=[];
+const loseExt={loseContext(){lost=true;for(const fn of [...(lastVolumeCanvas?.listeners?.webglcontextlost||[])])fn({preventDefault(){}});},restoreContext(){lost=false;for(const fn of [...(lastVolumeCanvas?.listeners?.webglcontextrestored||[])])fn({});}};
 const gl=new Proxy({}, {get(_,key){
  if(key==='getShaderParameter'||key==='getProgramParameter')return()=>true;
  if(key==='isContextLost')return()=>lost;
+ if(key==='getExtension')return name=>name==='WEBGL_lose_context'&&(lost?null:loseExt)||null;
  if(key==='getUniformLocation')return(_,name)=>name;
  if(key==='getAttribLocation')return()=>0;
  if(key.startsWith('uniform'))return(name,...values)=>uniforms[name]=values;
@@ -29,8 +31,13 @@ class Element {
  contains(node){return node===this||this.childNodes.some(c=>c.nodeType===1&&c.contains(node));}
  closest(selector){for(let node=this;node;node=node.parentElement){if(selector.includes(node.tagName.toLowerCase())&&['A','BUTTON','INPUT','TEXTAREA','SELECT','SCRIPT','STYLE'].includes(node.tagName))return node;if(selector.includes('[aria-hidden')&&node.attributes['aria-hidden']==='true')return node;}return null;}
  setAttribute(key,value){this.attributes[key]=value;}getBoundingClientRect(){const r=this.rect;return {...r,right:r.left+r.width,bottom:r.top+r.height};}
- addEventListener(key,fn){(this.listeners[key]??=[]).push(fn);}remove(){if(this.parentElement)this.parentElement.childNodes=this.parentElement.childNodes.filter(n=>n!==this);this.isConnected=false;}
- getContext(type,attributes){if(type==='webgl2'){contexts++;contextAttributes.push(attributes);return gpu&&!(software&&attributes.failIfMajorPerformanceCaveat)?gl:null;}return this.ctx??=( {calls:[],scale(){},clearRect(){},drawImage(...args){this.calls.push(['image',...args]);now+=submitCost;},fillText(...args){this.calls.push(['text',this.font,...args]);},measureText(){return{fontBoundingBoxAscent:38,fontBoundingBoxDescent:10};},getImageData(x,y,w,h){const data=new Uint8Array(w*h*4);for(let yy=Math.floor(h*.25);yy<h*.65;yy++)for(let xx=Math.floor(w*.2);xx<w*.8;xx++)data[(yy*w+xx)*4+3]=255;return{data};} });}
+ addEventListener(key,fn,opts){
+  const wrapper=e=>{if(opts?.once)this.listeners[key]=this.listeners[key].filter(f=>f!==wrapper);fn(e);};
+  if(opts?.signal)opts.signal.addEventListener('abort',()=>{this.listeners[key]=(this.listeners[key]||[]).filter(f=>f!==wrapper);},{once:true});
+  (this.listeners[key]??=[]).push(wrapper);
+ }
+ remove(){if(this.parentElement)this.parentElement.childNodes=this.parentElement.childNodes.filter(n=>n!==this);this.isConnected=false;}
+ getContext(type,attributes){if(type==='webgl2'){contexts++;lastVolumeCanvas=this;lost=false;contextAttributes.push(attributes);return gpu&&!(software&&attributes.failIfMajorPerformanceCaveat)?gl:null;}return this.ctx??=( {calls:[],scale(){},clearRect(){},drawImage(...args){this.calls.push(['image',...args]);now+=submitCost;},fillText(...args){this.calls.push(['text',this.font,...args]);},measureText(){return{fontBoundingBoxAscent:38,fontBoundingBoxDescent:10};},getImageData(x,y,w,h){const data=new Uint8Array(w*h*4);for(let yy=Math.floor(h*.25);yy<h*.65;yy++)for(let xx=Math.floor(w*.2);xx<w*.8;xx++)data[(yy*w+xx)*4+3]=255;return{data};} });}
 }
 const observers=[];
 class Intersection {constructor(callback){this.callback=callback;observers.push(this);}observe(){}unobserve(){}disconnect(){}emit(target,visible){this.callback([{target,isIntersecting:visible}]);}}
@@ -151,4 +158,21 @@ externalA.setOptions(externalA.getOptions());externalA.destroy();externalB.destr
 const externalFirst=new CloudText(text('External first'),{injectStyles:false}),injectedSecond=new CloudText(text('Injected second'));
 assert.equal(document.head.childNodes.length,1,'A later default owner can install the shared stylesheet');
 externalFirst.destroy();injectedSecond.destroy();assert.equal(document.head.childNodes.length,0);assert.equal(frames.size,0);
+// CloudVolume and CloudText context loss and restore: stale layer handles count as released, and CloudText resumes after restore.
+{
+ const v=new CloudVolume({sharedBuffer:true});
+ const staleLayer=v.createLayer(mask,{scale:32});
+ loseExt.loseContext();loseExt.restoreContext();
+ assert.throws(()=>v.renderLayer(staleLayer,0,true,{active:false}),/released/,'Layer handles from before context restore count as released');
+ v.destroy();lost=false;
+ const restoreEl=text('Restore cloud text');
+ const restoreText=new CloudText(restoreEl,{formationDuration:0,idleFps:0});
+ pump(recoveryNow+=100);assert(restoreEl.classList.contains('puff-text-ready'));
+ const drawsBeforeRestore=draws;
+ loseExt.loseContext();assert(!restoreEl.classList.contains('puff-text-ready'),'Native HTML stays visible while context is lost');
+ loseExt.restoreContext();pump(recoveryNow+=100);
+ assert(restoreEl.classList.contains('puff-text-ready'),'CloudText resumes rendering after context restore');
+ assert(draws>drawsBeforeRestore);
+ restoreText.destroy();lost=false;
+}
 console.log('PASS semantic HTML, shared rendering, input ownership, toggle combinations, external styles, mask coordinate changes, visibility, isolated physics, cleanup, and native fallback.');

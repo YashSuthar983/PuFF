@@ -36,6 +36,7 @@ export interface CloudSceneOptions {
  windDirection?:Vector3;lightDirection?:Vector3;offset?:Vector3;scale?:Vector3;
  densityShader?:string;uniforms?:Record<string,number|number[]>;
  onStrike?:(event:StrikeEvent)=>void;onFrame?:(event:{time:number;width:number;height:number;lightning:ReturnType<Lightning['getState']>})=>void;
+ onContextLost?:()=>void;onContextRestored?:()=>void;
 }
 export type CloudScenePatch=Omit<CloudSceneOptions,'interactive'|'autoStart'|'densityShader'|'failIfMajorPerformanceCaveat'|'powerPreference'>;
 export interface DensityField {data:Uint8Array;width:number;height:number;depth:number;extent?:Vector3}
@@ -52,7 +53,7 @@ export class CloudScene {
  setOptions(patch:CloudScenePatch):this;
  setTimeOfDay(preset:TimeOfDay,overrides?:CloudScenePatch):this;
  getOptions():CloudSceneOptions;
- getPerformance():{gpuTimingAvailable:boolean;gpuMs:number|null;frameMs:number|null;renderScale:number;width:number;height:number;software:boolean;profile:'cpu'|'low'|'medium'|'high'};
+ getPerformance():{gpuTimingAvailable:boolean;gpuMs:number|null;frameMs:number|null;renderScale:number;width:number;height:number;software:boolean;profile:'cpu'|'low'|'medium'|'high';contextLost:boolean};
  setUniforms(patch:Record<string,number|number[]>):this;
  setDensityField(data:Uint8Array,dimensions:Omit<DensityField,'data'>):this;
  clearDensityField():this;
@@ -65,8 +66,8 @@ export class CloudScene {
  render(time?:number,dt?:number):boolean;destroy():void;
 }
 export class StormClouds extends CloudScene {}
-export interface VolumeOptions {failIfMajorPerformanceCaveat?:boolean;powerPreference?:WebGLPowerPreference;gridSize?:number;minCell?:number;minRadius?:number;radiusFactor?:number;renderWidth?:number;renderHeight?:number;raySteps?:number;shadowStride?:number;detailScale?:number;edgeFadeTop?:number;edgeFadeBottom?:number;sharedBuffer?:boolean;physics?:PhysicsOptions}
-export type CloudLayerOptions=Omit<VolumeOptions,'physics'|'sharedBuffer'|'failIfMajorPerformanceCaveat'|'powerPreference'>&{scale?:number;puffiness?:number};
+export interface VolumeOptions {failIfMajorPerformanceCaveat?:boolean;powerPreference?:WebGLPowerPreference;gridSize?:number;minCell?:number;minRadius?:number;radiusFactor?:number;renderWidth?:number;renderHeight?:number;raySteps?:number;shadowStride?:number;detailScale?:number;edgeFadeTop?:number;edgeFadeBottom?:number;sharedBuffer?:boolean;physics?:PhysicsOptions;onContextLost?:()=>void;onContextRestored?:()=>void}
+export type CloudLayerOptions=Omit<VolumeOptions,'physics'|'sharedBuffer'|'failIfMajorPerformanceCaveat'|'powerPreference'|'onContextLost'|'onContextRestored'>&{scale?:number;puffiness?:number};
 export interface CloudPointer {active:boolean; x?:number;y?:number;vx?:number;vy?:number;down?:boolean;segments?:Array<{ax:number;ay:number;bx:number;by:number;down?:boolean}>;effects?:Array<{kind:'puff'|'stir';x:number;y:number;strength?:number}>}
 export interface CloudLayer {readonly width:number;readonly height:number}
 export interface LayerRender {rendered:boolean;settled:boolean;canvas:HTMLCanvasElement;x:number;y:number;width:number;height:number}

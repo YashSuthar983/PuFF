@@ -138,7 +138,7 @@ class TextManager{
    p.x=x;p.y=y;p.at=now;p.active=sweep&&inside&&!(touch&&type==='pointerup');e.inputDirty=true;this.wake();
   }
  }
- ensureVolume(){if(this.volumeError)throw this.volumeError;if(!this.volume)try{this.volume=new CloudVolume({sharedBuffer:true,failIfMajorPerformanceCaveat:true,powerPreference:'low-power'});}catch(error){this.volumeError=error;throw error;}return this.volume;}
+ ensureVolume(){if(this.volumeError)throw this.volumeError;if(!this.volume)try{this.volume=new CloudVolume({sharedBuffer:true,failIfMajorPerformanceCaveat:true,powerPreference:'low-power',onContextLost:()=>{for(const owner of this.owners)owner.setPlayMode(false);for(const e of this.entries){resetPointer(e);e.layer=null;e.maskDirty=true;e.element.classList.remove(readyClass);e.canvas.getContext('2d')?.clearRect(0,0,e.canvas.width,e.canvas.height);}},onContextRestored:()=>{for(const owner of this.owners)if(owner.contextError){owner.error=null;owner.contextError=false;owner.paused=owner.userPaused||false;for(const e of owner.entries){e.canvas.style.removeProperty('display');e.maskDirty=e.dirty=true;}}for(const e of this.entries){e.layer=null;e.maskDirty=e.dirty=true;e.lastDraw=0;}this.wake();}});this.generation=this.volume.generation;}catch(error){this.volumeError=error;throw error;}if(this.volume.generation!==this.generation){this.generation=this.volume.generation;for(const e of this.entries){e.layer=null;e.maskDirty=e.dirty=true;}}return this.volume;}
  evict(){const cached=[...this.entries].filter(e=>e.layer);if(cached.length<32)return;const oldest=cached.filter(e=>!e.visible).sort((a,b)=>a.lastDraw-b.lastDraw)[0];if(oldest){this.volume.releaseLayer(oldest.layer);oldest.layer=null;oldest.maskDirty=true;}}
  tick(now){
   this.frame=0;if(this.doc.hidden)return;
@@ -152,7 +152,7 @@ class TextManager{
    const rate=moving?o.fps:o.idleFps;
    if(e.maskDirty||e.dirty||e.inputDirty&&(resting||!e.lastDraw||now-e.lastDraw>=1000/o.fps)||!resting&&rate>0&&now-e.lastDraw>=1000/rate){chosen=e;this.cursor=index+1;break;}
   }
-  if(chosen){const started=clock(),building=chosen.maskDirty;try{this.draw(chosen,now);}catch(error){chosen.owner.fail(error);}this.lastCpuMs=clock()-started;
+  if(chosen){const started=clock(),building=chosen.maskDirty;try{this.draw(chosen,now);}catch(error){chosen.owner.fail(error,Boolean(this.volume?.gl.isContextLost()));}this.lastCpuMs=clock()-started;
    if(!building&&!chosen.owner.error){
     const o=chosen.owner.options;chosen.cpuAverage=chosen.cpuAverage===undefined?this.lastCpuMs:chosen.cpuAverage*.8+this.lastCpuMs*.2;chosen.samples++;
     if(o.adaptiveQuality&&chosen.samples>=4&&chosen.samples-chosen.adjustAt>=8){
@@ -226,7 +226,7 @@ class TextManager{
 /** Attach cloud lettering to semantic HTML; all instances in a document share one renderer. */
 export class CloudText{
  constructor(target,options={}){
-  this.options=settings(defaults,options);this.entries=[];this.paused=false;this.playMode=false;this.destroyed=false;this.error=null;this.lights=[];this.lighting=null;this.wind=null;
+  this.options=settings(defaults,options);this.entries=[];this.paused=false;this.userPaused=false;this.playMode=false;this.destroyed=false;this.error=null;this.contextError=false;this.lights=[];this.lighting=null;this.wind=null;
   const elements=typeof target==='string'?Array.from(document.querySelectorAll(target)):target?.nodeType===1?[target]:Array.from(target||[]);
   if(!elements.length)throw new TypeError('CloudText needs at least one HTML element.');
   const doc=elements[0].ownerDocument;
@@ -250,7 +250,7 @@ export class CloudText{
   }
   this.manager.wake();
  }
- fail(error){this.error=error;this.setPlayMode(false);for(const entry of this.entries){resetPointer(entry);entry.effects=[];entry.gustPending=0;if(entry.layer){this.manager.volume?.releaseLayer(entry.layer);entry.layer=null;}entry.element.classList.remove(readyClass);entry.canvas.style.setProperty('display','none','important');entry.maskDirty=entry.dirty=false;}this.paused=true;this.options.onError?.(error);}
+ fail(error,fromContextLoss=false){this.error=error;this.contextError=fromContextLoss;this.setPlayMode(false);for(const entry of this.entries){resetPointer(entry);entry.effects=[];entry.gustPending=0;if(entry.layer){this.manager.volume?.releaseLayer(entry.layer);entry.layer=null;}entry.element.classList.remove(readyClass);entry.canvas.style.setProperty('display','none','important');entry.maskDirty=entry.dirty=false;}this.paused=true;this.options.onError?.(error);}
  handlePointer(type,event){if(!['pointerdown','pointermove','pointerup','pointercancel'].includes(type))throw new RangeError('Unknown pointer event.');if(!this.destroyed)this.manager.pointer(type,event,this);return this;}
  setLighting(value){
   for(const key of ['lit','shade','direction','glareTint'])if(key in value&&(!Array.isArray(value[key])||value[key].length!==3||!Array.from(value[key]).every(Number.isFinite)))throw new TypeError('Invalid lighting vector: '+key);
@@ -292,7 +292,7 @@ export class CloudText{
   }
   this.playMode=next;if(!this.error&&!this.destroyed&&this.entries.some(e=>e.dirty))this.manager.wake();return this;
  }
- setPaused(value){if(this.destroyed||this.error)return this;const next=Boolean(value);if(next===this.paused)return this;this.paused=next;if(this.paused)this.setPlayMode(false);for(const e of this.entries){resetPointer(e);e.dirty=true;e.lastDraw=0;e.effects=[];e.gustPending=0;}this.manager.wake();return this;}
+ setPaused(value){if(this.destroyed||this.error)return this;const next=Boolean(value);this.userPaused=next;if(next===this.paused)return this;this.paused=next;if(this.paused)this.setPlayMode(false);for(const e of this.entries){resetPointer(e);e.dirty=true;e.lastDraw=0;e.effects=[];e.gustPending=0;}this.manager.wake();return this;}
  getPerformance(){return {rendererCount:this.manager.volume&&!this.manager.volume.destroyed?1:0,elements:this.entries.length,visibleElements:this.entries.filter(e=>e.visible).length,renderScale:Math.min(1,...this.entries.map(e=>e.renderScale)),cachedLayers:[...this.manager.entries].filter(e=>e.layer).length,draws:this.manager.draws,cpuSubmitMs:this.manager.lastCpuMs,error:this.error?.message??null};}
  destroy(){if(this.destroyed)return;this.destroyed=true;this.setPlayMode(false);this.manager.remove(this);this.entries=[];}
 }

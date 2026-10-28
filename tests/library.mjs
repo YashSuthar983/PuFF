@@ -71,6 +71,55 @@ for(const key of ['deleteProgram','deleteBuffer','deleteTexture'])assert(calls.s
 const actor=new Lightning(null);actor.configure('interval',600);actor.configure('branches',8);actor.trigger();
 for(let i=0;i<600;i++){actor.update(1/60,{x:100,y:100,color:[.5,.8,1],enabled:true},()=>[{x:140,y:120}]);assert(actor.getSegments().length<=32);assert(actor.getLights().length<=3);assert(actor.getState().flash<=3);}
 actor.clear();assert.equal(actor.getLights().length,0);
+
+// Context lifecycle: release in destroy(), StrictMode same-canvas reuse, and loss/restore.
+{
+ let lost=false,loseCount=0,restoreCount=0;const listeners={};
+ const loseExt={loseContext(){loseCount++;lost=true;for(const fn of [...(listeners.webglcontextlost||[])])fn({preventDefault(){this.prevented=true;}});},restoreContext(){restoreCount++;lost=false;for(const fn of [...(listeners.webglcontextrestored||[])])fn({});}};
+ const lifecycleGl=new Proxy(gl,{get(target,key){
+  if(key==='isContextLost')return()=>lost;
+  if(key==='getExtension')return name=>name==='WEBGL_lose_context'&&(lost?null:loseExt)||null;
+  return target[key];
+ }});
+ const lifecycleCanvas={width:1,height:1,getContext:()=>lifecycleGl,getBoundingClientRect:()=>({width:400,height:300}),addEventListener(type,fn,opts){
+  const wrapper=e=>{if(opts?.once)listeners[type]=listeners[type].filter(f=>f!==wrapper);fn(e);};
+  if(opts?.signal)opts.signal.addEventListener('abort',()=>{listeners[type]=(listeners[type]||[]).filter(f=>f!==wrapper);},{once:true});
+  (listeners[type]??=[]).push(wrapper);
+ }};
+ const first=new CloudScene(lifecycleCanvas,{autoStart:false,interactive:false});
+ assert.equal(first.getPerformance().contextLost,false);
+ first.destroy();assert.equal(loseCount,1,'destroy() calls loseContext()');assert(lost);
+ first.destroy();assert.equal(loseCount,1,'destroy() is idempotent');
+ // StrictMode pattern: construct again on the same canvas whose context was lost by destroy().
+ let restoredEvents=0,lostEvents=0,framesDrawn=0;
+ const second=new CloudScene(lifecycleCanvas,{autoStart:true,interactive:false,onContextLost:()=>lostEvents++,onContextRestored:()=>restoredEvents++,onFrame:()=>framesDrawn++});
+ assert.equal(restoreCount,1,'Constructing on a canvas lost by destroy() triggers restoreContext()');
+ assert.equal(restoredEvents,1);assert.equal(second.getPerformance().contextLost,false);
+ const customField=createDensityField(()=>.5,{width:2,height:2,depth:2});
+ second.setDensityField(customField.data,{...customField,extent:[2,2,2]});
+ const uploadsBeforeLoss=calls.filter(c=>c[0]==='texImage3D').length;
+ // Trigger GPU reset while running.
+ loseExt.loseContext();assert.equal(lostEvents,1);assert.equal(second.getPerformance().contextLost,true);
+ assert.equal(frames.size,0,'Context loss cancels the scheduled frame');
+ assert.equal(second.render(1,.016),false,'Rendering while lost returns false without throwing');
+ loseExt.restoreContext();assert.equal(restoredEvents,2);assert.equal(second.getPerformance().contextLost,false);
+ assert(calls.filter(c=>c[0]==='texImage3D').length>uploadsBeforeLoss,'Custom density field is re-uploaded on restore');
+ assert.equal(frames.size,1,'Running scene resumes scheduling after restore');
+ for(const fn of [...frames.values()]){frames.clear();fn(16);}
+ assert(framesDrawn>0,'Running scene renders after restore');
+ // Paused scene redraws once on restore; stopped scene stays stopped.
+ second.setPaused(true);const pausedDraws=framesDrawn;
+ loseExt.loseContext();loseExt.restoreContext();
+ assert.equal(framesDrawn,pausedDraws+1,'Paused scene redraws its still frame on restore');
+ second.setPaused(false);second.stop();const stoppedDraws=framesDrawn;
+ loseExt.loseContext();loseExt.restoreContext();
+ assert.equal(framesDrawn,stoppedDraws,'Stopped scene stays stopped on restore');assert.equal(frames.size,0);
+ // Safe destroy when context is already lost.
+ loseExt.loseContext();const deletesBeforeLostDestroy=calls.filter(c=>c[0].startsWith('delete')).length;
+ second.destroy();assert.equal(calls.filter(c=>c[0].startsWith('delete')).length,deletesBeforeLostDestroy,'destroy() skips GL deletes when context is already lost');
+ loseExt.restoreContext();
+}
+
 const context={window:{}};vm.runInNewContext(await readFile(new URL('../dist/puff.js',import.meta.url),'utf8'),context);
 assert.deepEqual(Object.keys(context.window.PuFF).sort(),['CloudText','CloudTimes','CloudControls','CloudPresets','CloudScene','CloudVolume','Lightning','StormClouds','createDensityField'].sort());
 assert.equal(context.window.PuFF.CloudScene.fragmentShader,CloudScene.fragmentShader,'Bundle matches module source');
