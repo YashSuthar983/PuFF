@@ -211,7 +211,8 @@ function validatePointer(pointer){
 export class CloudVolume {
     constructor(options = {}) {
       validateOptions(options);this.options = {...options};
-      this.layers=new Map();this.generation=0;this.destroyed=false;
+      this.layers=new Map();this.generation=0;this.destroyed=false;this.failed=false;this.compileJob=null;
+      this.ready=null;this.resolveReady=null;this.rejectReady=null;
       this.physics=Object.fromEntries(Object.entries(CloudControls.volume).map(([key,value])=>[key,value.default]));
       this.configure(options.physics||{});
       this.canvas = document.createElement('canvas');
@@ -226,48 +227,89 @@ export class CloudVolume {
       this.trailStrength = 1;
       const listen=(name,fn)=>this.canvas.addEventListener?.(name,fn,{signal:this.events.signal});
       listen('webglcontextlost',e=>{
-        e.preventDefault();this.layers.clear();
+        e.preventDefault();this.cancelCompile(false);this.layers.clear();
         this.program=null;this.buffer=null;this.texture=null;this.fullFormationTexture=null;
         this.options.onContextLost?.();
       });
       listen('webglcontextrestored',()=>{
-        if(this.destroyed)return;
+        if(this.destroyed||this.failed)return;
         this.generation++;this.layers.clear();this.initGpu();
         this.options.onContextRestored?.();
       });
-      if(gl.isContextLost())this.loseExtension?.restoreContext?.();
-      else this.initGpu();
+      if(gl.isContextLost()){
+        this.ready=new Promise((resolve,reject)=>{this.resolveReady=resolve;this.rejectReady=reject;});
+        this.ready.catch(()=>{});
+        this.loseExtension?.restoreContext?.();
+      }else this.initGpu();
+    }
+    cancelCompile(deleteResources=false){
+      const job=this.compileJob;if(!job)return;
+      if(job.raf)cancelAnimationFrame(job.raf);if(job.timer)clearTimeout(job.timer);
+      if(deleteResources&&!this.gl.isContextLost()){for(const s of job.shaders)this.gl.deleteShader(s);this.gl.deleteProgram(job.program);}
+      this.compileJob=null;
+    }
+    finishProgram({program,shaders}){
+      const gl=this.gl,ok=gl.getProgramParameter(program,gl.LINK_STATUS);
+      if(!ok){
+        const logs=[];
+        for(const s of shaders)if(!gl.getShaderParameter(s,gl.COMPILE_STATUS))logs.push(gl.getShaderInfoLog(s));
+        logs.push(gl.getProgramInfoLog(program));
+        for(const s of shaders)gl.deleteShader(s);
+        gl.deleteProgram(program);
+        throw new Error(logs.filter(Boolean).join('\n')||'Shader program link failed.');
+      }
+      for(const s of shaders)gl.deleteShader(s);
+      return program;
+    }
+    activateProgram(program){
+      const gl=this.gl;this.program=program;
+      gl.useProgram(program);gl.bindBuffer(gl.ARRAY_BUFFER,this.buffer);
+      const position=gl.getAttribLocation(program,'aPosition');
+      gl.enableVertexAttribArray(position);gl.vertexAttribPointer(position,2,gl.FLOAT,false,0,0);
+      this.uniforms=Object.fromEntries(['uShadowStride','uDensity','uFormation','uSize','uResolution','uRadius','uTime','uDetailScale','uMarchSteps','uVaporDensity','uLightDirection','uGlare','uGlareTint','uPointLight','uPointColor','uPointPower','uPointReach','uElectricGlow','uEdgeFade','uLit','uShade'].map(key=>[key,gl.getUniformLocation(program,key)]));
+      gl.uniform1i(this.uniforms.uDensity,0);
+      gl.uniform1i(this.uniforms.uFormation,1);
+    }
+    pollCompile(ext){
+      const job=this.compileJob;if(!job)return;
+      if(this.destroyed||this.failed||this.gl.isContextLost()){this.cancelCompile(false);return;}
+      if(this.gl.getProgramParameter(job.program,ext.COMPLETION_STATUS_KHR)){
+        this.cancelCompile(false);
+        try{
+          this.activateProgram(this.finishProgram(job));
+          this.resolveReady?.(this);this.resolveReady=this.rejectReady=null;
+          this.options.onReady?.();
+        }catch(error){
+          this.failed=true;
+          if(!this.gl.isContextLost()){
+            if(this.texture)this.gl.deleteTexture(this.texture);
+            if(this.fullFormationTexture)this.gl.deleteTexture(this.fullFormationTexture);
+            if(this.buffer)this.gl.deleteBuffer(this.buffer);
+            this.canvas.addEventListener?.('webglcontextlost',e=>e.preventDefault(),{once:true});
+            this.loseExtension?.loseContext?.();
+          }
+          this.texture=this.fullFormationTexture=this.buffer=this.program=null;
+          this.rejectReady?.(error);this.resolveReady=this.rejectReady=null;
+          this.options.onError?.(error);
+        }
+        return;
+      }
+      const step=()=>{job.raf=0;if(job.timer){clearTimeout(job.timer);job.timer=0;}this.pollCompile(ext);};
+      if(typeof requestAnimationFrame==='function')job.raf=requestAnimationFrame(step);
+      job.timer=setTimeout(()=>{if(job.raf){cancelAnimationFrame(job.raf);job.raf=0;}job.timer=0;this.pollCompile(ext);},16);
     }
     initGpu(){
-      const gl=this.gl;if(gl.isContextLost())return;
+      const gl=this.gl;if(gl.isContextLost()||this.failed)return;
       if(!this.loseExtension){this.loseExtension=gl.getExtension('WEBGL_lose_context');if(this.loseExtension)lostExtensions.set(this.canvas,this.loseExtension);}
-      const compile = (type, source) => {
-        const shader = gl.createShader(type); gl.shaderSource(shader, source); gl.compileShader(shader);
-        if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {const message=gl.getShaderInfoLog(shader);gl.deleteShader(shader);throw new Error(message);}
-        return shader;
-      };
-      this.program = gl.createProgram();
-      let vs,fs;
-      try{
-        vs=compile(gl.VERTEX_SHADER,vertex);fs=compile(gl.FRAGMENT_SHADER,fragment);
-        gl.attachShader(this.program,vs);gl.attachShader(this.program,fs);gl.linkProgram(this.program);
-        if (!gl.getProgramParameter(this.program, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(this.program));
-      }catch(error){gl.deleteProgram(this.program);this.program=null;throw error;}
-      finally{if(vs)gl.deleteShader(vs);if(fs)gl.deleteShader(fs);}
-      gl.useProgram(this.program);
+      this.cancelCompile(true);
       const buffer = this.buffer=gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
       gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1,-1, 1,-1, -1,1, -1,1, 1,-1, 1,1]), gl.STATIC_DRAW);
-      const position = gl.getAttribLocation(this.program, 'aPosition');
-      gl.enableVertexAttribArray(position); gl.vertexAttribPointer(position, 2, gl.FLOAT, false, 0, 0);
-      this.uniforms = Object.fromEntries(['uShadowStride','uDensity','uFormation','uSize','uResolution','uRadius','uTime','uDetailScale','uMarchSteps','uVaporDensity','uLightDirection','uGlare','uGlareTint','uPointLight','uPointColor','uPointPower','uPointReach','uElectricGlow','uEdgeFade','uLit','uShade'].map(key => [key,gl.getUniformLocation(this.program,key)]));
       this.texture = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D,this.texture);
       gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MIN_FILTER,gl.LINEAR);
       gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MAG_FILTER,gl.LINEAR);
       gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_S,gl.CLAMP_TO_EDGE);
       gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_T,gl.CLAMP_TO_EDGE);
       gl.pixelStorei(gl.UNPACK_ALIGNMENT,1);
-      gl.uniform1i(this.uniforms.uDensity,0);
-      gl.uniform1i(this.uniforms.uFormation,1);
       this.fullFormationTexture=gl.createTexture();
       gl.activeTexture(gl.TEXTURE1);gl.bindTexture(gl.TEXTURE_2D,this.fullFormationTexture);
       gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MIN_FILTER,gl.LINEAR);
@@ -279,6 +321,28 @@ export class CloudVolume {
       if(this.field&&!this.options.sharedBuffer){
         gl.texImage2D(gl.TEXTURE_2D,0,gl.RGB8,this.gw,this.gh,0,gl.RGB,gl.UNSIGNED_BYTE,null);
         this.dirty=true;this.upload();
+      }
+      const program=gl.createProgram(),shaders=[];
+      for(const [type,source]of [[gl.VERTEX_SHADER,vertex],[gl.FRAGMENT_SHADER,fragment]]){
+        const s=gl.createShader(type);shaders.push(s);gl.shaderSource(s,source);gl.compileShader(s);gl.attachShader(program,s);
+      }
+      gl.bindAttribLocation(program,0,'aPosition');gl.linkProgram(program);
+      const parallel=gl.getExtension('KHR_parallel_shader_compile');
+      if(parallel&&typeof parallel.COMPLETION_STATUS_KHR==='number'){
+        if(!this.ready){this.ready=new Promise((resolve,reject)=>{this.resolveReady=resolve;this.rejectReady=reject;});this.ready.catch(()=>{});}
+        this.compileJob={program,shaders};
+        this.pollCompile(parallel);
+      }else{
+        try{
+          this.activateProgram(this.finishProgram({program,shaders}));
+          if(!this.ready)this.ready=Promise.resolve(this);
+          else{this.resolveReady?.(this);this.resolveReady=this.rejectReady=null;}
+          this.options.onReady?.();
+        }catch(error){
+          gl.deleteTexture(this.texture);gl.deleteTexture(this.fullFormationTexture);gl.deleteBuffer(this.buffer);
+          this.texture=this.fullFormationTexture=this.buffer=this.program=null;
+          throw error;
+        }
       }
     }
     configure(patch={}){
@@ -718,7 +782,7 @@ export class CloudVolume {
       return true;
     }
     destroy(){
-      if(this.destroyed)return;this.destroyed=true;this.events.abort();
+      if(this.destroyed)return;this.destroyed=true;this.events.abort();this.cancelCompile(true);
       for(const layer of this.layers.keys())this.releaseLayer(layer);
       if(!this.gl.isContextLost()){
         if(this.texture)this.gl.deleteTexture(this.texture);

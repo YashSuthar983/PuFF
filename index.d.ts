@@ -36,7 +36,7 @@ export interface CloudSceneOptions {
  windDirection?:Vector3;lightDirection?:Vector3;offset?:Vector3;scale?:Vector3;
  densityShader?:string;uniforms?:Record<string,number|number[]>;
  onStrike?:(event:StrikeEvent)=>void;onFrame?:(event:{time:number;width:number;height:number;lightning:ReturnType<Lightning['getState']>})=>void;
- onContextLost?:()=>void;onContextRestored?:()=>void;
+ onError?:(error:Error)=>void;onContextLost?:()=>void;onContextRestored?:()=>void;
 }
 export type CloudScenePatch=Omit<CloudSceneOptions,'interactive'|'autoStart'|'densityShader'|'failIfMajorPerformanceCaveat'|'powerPreference'>;
 export interface DensityField {data:Uint8Array;width:number;height:number;depth:number;extent?:Vector3}
@@ -48,7 +48,7 @@ export class CloudScene {
  static vertexShader:string;static fragmentShader:string;
  static createFragmentShader(body?:string,uniforms?:Record<string,number|number[]>):string;
  constructor(canvas:HTMLCanvasElement,options?:CloudSceneOptions);
- readonly canvas:HTMLCanvasElement; readonly gl:WebGL2RenderingContext;
+ readonly canvas:HTMLCanvasElement; readonly gl:WebGL2RenderingContext; readonly ready:Promise<this>;
  options:CloudSceneOptions; paused:boolean; time:number;
  setOptions(patch:CloudScenePatch):this;
  setTimeOfDay(preset:TimeOfDay,overrides?:CloudScenePatch):this;
@@ -66,15 +66,15 @@ export class CloudScene {
  render(time?:number,dt?:number):boolean;destroy():void;
 }
 export class StormClouds extends CloudScene {}
-export interface VolumeOptions {failIfMajorPerformanceCaveat?:boolean;powerPreference?:WebGLPowerPreference;gridSize?:number;minCell?:number;minRadius?:number;radiusFactor?:number;renderWidth?:number;renderHeight?:number;raySteps?:number;shadowStride?:number;detailScale?:number;edgeFadeTop?:number;edgeFadeBottom?:number;sharedBuffer?:boolean;physics?:PhysicsOptions;onContextLost?:()=>void;onContextRestored?:()=>void}
-export type CloudLayerOptions=Omit<VolumeOptions,'physics'|'sharedBuffer'|'failIfMajorPerformanceCaveat'|'powerPreference'|'onContextLost'|'onContextRestored'>&{scale?:number;puffiness?:number};
+export interface VolumeOptions {failIfMajorPerformanceCaveat?:boolean;powerPreference?:WebGLPowerPreference;gridSize?:number;minCell?:number;minRadius?:number;radiusFactor?:number;renderWidth?:number;renderHeight?:number;raySteps?:number;shadowStride?:number;detailScale?:number;edgeFadeTop?:number;edgeFadeBottom?:number;sharedBuffer?:boolean;physics?:PhysicsOptions;onError?:(error:Error)=>void;onContextLost?:()=>void;onContextRestored?:()=>void}
+export type CloudLayerOptions=Omit<VolumeOptions,'physics'|'sharedBuffer'|'failIfMajorPerformanceCaveat'|'powerPreference'|'onError'|'onContextLost'|'onContextRestored'>&{scale?:number;puffiness?:number};
 export interface CloudPointer {active:boolean; x?:number;y?:number;vx?:number;vy?:number;down?:boolean;segments?:Array<{ax:number;ay:number;bx:number;by:number;down?:boolean}>;effects?:Array<{kind:'puff'|'stir';x:number;y:number;strength?:number}>}
 export interface CloudLayer {readonly width:number;readonly height:number}
 export interface LayerRender {rendered:boolean;settled:boolean;canvas:HTMLCanvasElement;x:number;y:number;width:number;height:number}
 export class CloudVolume {
  static vertexShader:string;static fragmentShader:string;
  constructor(options?:VolumeOptions);
- readonly canvas:HTMLCanvasElement;readonly gl:WebGL2RenderingContext;
+ readonly canvas:HTMLCanvasElement;readonly gl:WebGL2RenderingContext;readonly ready:Promise<this>;
  trailStrength:number;vaporDensity?:number;airStrength?:number;dirty:boolean;
  pointLight?:{x:number;y:number;height:number;power:number;reach:number;color?:Vector3;glow?:number}|null;
  lighting?:LightingOptions;

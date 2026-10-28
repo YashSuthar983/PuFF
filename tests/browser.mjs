@@ -61,6 +61,7 @@ await withPackage(async({directory,packageRoot})=>{
      globalThis.words=new kit.CloudText(document.querySelector('h1'),{injectStyles:false,formationDuration:0,idleFps:0,quality:'low',fps:60,scrollWind:0});
      globalThis.scene=new kit.CloudScene(document.querySelector('#sky'),{autoStart:false,interactive:false,quality:'cpu',raySteps:4});
      scene.setOptions({cloudColor:kit.CloudTimes.day.lit,lightDirection:kit.CloudTimes.day.direction});
+     await scene.ready;
      if(!scene.render(0,0))throw new Error('Scene did not render');
      words.setLighting(kit.CloudTimes.day);
     });
@@ -103,11 +104,11 @@ await withPackage(async({directory,packageRoot})=>{
     await page.evaluate(()=>fallback.destroy());
     await page.evaluate(async()=>{
      globalThis.rejectWebGL=false;
-     // 50 contexts in sequence without console warning, and StrictMode same-canvas reuse + loss/restore.
+     // 50 contexts in sequence without console warning, and StrictMode same-canvas reuse + loss/restore + parallel compile.
      for(let i=0;i<50;i++){
       const c=document.createElement('canvas');c.style.width='64px';c.style.height='48px';document.body.append(c);
       const s=new kit.CloudScene(c,{autoStart:false,interactive:false,quality:'cpu',raySteps:4});
-      if(i===49&&!s.render(0,0))throw new Error('50th scene did not render');
+      if(i===49){await s.ready;if(!s.render(0,0))throw new Error('50th scene did not render');}
       s.destroy();c.remove();
      }
      const strictCanvas=document.querySelector('#sky');
@@ -115,6 +116,7 @@ await withPackage(async({directory,packageRoot})=>{
      const s1=new kit.CloudScene(strictCanvas,{autoStart:true,interactive:false,quality:'cpu',raySteps:4});
      s1.destroy();
      const s2=new kit.CloudScene(strictCanvas,{autoStart:true,interactive:false,quality:'cpu',raySteps:4,onFrame:()=>strictFrames++});
+     await s2.ready;
      await new Promise(resolve=>{const check=()=>{if(strictFrames>0)resolve();else requestAnimationFrame(check);};check();});
      s2.destroy();
     });

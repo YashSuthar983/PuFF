@@ -315,7 +315,8 @@ function validatePointer(pointer){
 class CloudVolume {
     constructor(options = {}) {
       validateOptions(options);this.options = {...options};
-      this.layers=new Map();this.generation=0;this.destroyed=false;
+      this.layers=new Map();this.generation=0;this.destroyed=false;this.failed=false;this.compileJob=null;
+      this.ready=null;this.resolveReady=null;this.rejectReady=null;
       this.physics=Object.fromEntries(Object.entries(CloudControls.volume).map(([key,value])=>[key,value.default]));
       this.configure(options.physics||{});
       this.canvas = document.createElement('canvas');
@@ -330,48 +331,89 @@ class CloudVolume {
       this.trailStrength = 1;
       const listen=(name,fn)=>this.canvas.addEventListener?.(name,fn,{signal:this.events.signal});
       listen('webglcontextlost',e=>{
-        e.preventDefault();this.layers.clear();
+        e.preventDefault();this.cancelCompile(false);this.layers.clear();
         this.program=null;this.buffer=null;this.texture=null;this.fullFormationTexture=null;
         this.options.onContextLost?.();
       });
       listen('webglcontextrestored',()=>{
-        if(this.destroyed)return;
+        if(this.destroyed||this.failed)return;
         this.generation++;this.layers.clear();this.initGpu();
         this.options.onContextRestored?.();
       });
-      if(gl.isContextLost())this.loseExtension?.restoreContext?.();
-      else this.initGpu();
+      if(gl.isContextLost()){
+        this.ready=new Promise((resolve,reject)=>{this.resolveReady=resolve;this.rejectReady=reject;});
+        this.ready.catch(()=>{});
+        this.loseExtension?.restoreContext?.();
+      }else this.initGpu();
+    }
+    cancelCompile(deleteResources=false){
+      const job=this.compileJob;if(!job)return;
+      if(job.raf)cancelAnimationFrame(job.raf);if(job.timer)clearTimeout(job.timer);
+      if(deleteResources&&!this.gl.isContextLost()){for(const s of job.shaders)this.gl.deleteShader(s);this.gl.deleteProgram(job.program);}
+      this.compileJob=null;
+    }
+    finishProgram({program,shaders}){
+      const gl=this.gl,ok=gl.getProgramParameter(program,gl.LINK_STATUS);
+      if(!ok){
+        const logs=[];
+        for(const s of shaders)if(!gl.getShaderParameter(s,gl.COMPILE_STATUS))logs.push(gl.getShaderInfoLog(s));
+        logs.push(gl.getProgramInfoLog(program));
+        for(const s of shaders)gl.deleteShader(s);
+        gl.deleteProgram(program);
+        throw new Error(logs.filter(Boolean).join('\n')||'Shader program link failed.');
+      }
+      for(const s of shaders)gl.deleteShader(s);
+      return program;
+    }
+    activateProgram(program){
+      const gl=this.gl;this.program=program;
+      gl.useProgram(program);gl.bindBuffer(gl.ARRAY_BUFFER,this.buffer);
+      const position=gl.getAttribLocation(program,'aPosition');
+      gl.enableVertexAttribArray(position);gl.vertexAttribPointer(position,2,gl.FLOAT,false,0,0);
+      this.uniforms=Object.fromEntries(['uShadowStride','uDensity','uFormation','uSize','uResolution','uRadius','uTime','uDetailScale','uMarchSteps','uVaporDensity','uLightDirection','uGlare','uGlareTint','uPointLight','uPointColor','uPointPower','uPointReach','uElectricGlow','uEdgeFade','uLit','uShade'].map(key=>[key,gl.getUniformLocation(program,key)]));
+      gl.uniform1i(this.uniforms.uDensity,0);
+      gl.uniform1i(this.uniforms.uFormation,1);
+    }
+    pollCompile(ext){
+      const job=this.compileJob;if(!job)return;
+      if(this.destroyed||this.failed||this.gl.isContextLost()){this.cancelCompile(false);return;}
+      if(this.gl.getProgramParameter(job.program,ext.COMPLETION_STATUS_KHR)){
+        this.cancelCompile(false);
+        try{
+          this.activateProgram(this.finishProgram(job));
+          this.resolveReady?.(this);this.resolveReady=this.rejectReady=null;
+          this.options.onReady?.();
+        }catch(error){
+          this.failed=true;
+          if(!this.gl.isContextLost()){
+            if(this.texture)this.gl.deleteTexture(this.texture);
+            if(this.fullFormationTexture)this.gl.deleteTexture(this.fullFormationTexture);
+            if(this.buffer)this.gl.deleteBuffer(this.buffer);
+            this.canvas.addEventListener?.('webglcontextlost',e=>e.preventDefault(),{once:true});
+            this.loseExtension?.loseContext?.();
+          }
+          this.texture=this.fullFormationTexture=this.buffer=this.program=null;
+          this.rejectReady?.(error);this.resolveReady=this.rejectReady=null;
+          this.options.onError?.(error);
+        }
+        return;
+      }
+      const step=()=>{job.raf=0;if(job.timer){clearTimeout(job.timer);job.timer=0;}this.pollCompile(ext);};
+      if(typeof requestAnimationFrame==='function')job.raf=requestAnimationFrame(step);
+      job.timer=setTimeout(()=>{if(job.raf){cancelAnimationFrame(job.raf);job.raf=0;}job.timer=0;this.pollCompile(ext);},16);
     }
     initGpu(){
-      const gl=this.gl;if(gl.isContextLost())return;
+      const gl=this.gl;if(gl.isContextLost()||this.failed)return;
       if(!this.loseExtension){this.loseExtension=gl.getExtension('WEBGL_lose_context');if(this.loseExtension)lostExtensions.set(this.canvas,this.loseExtension);}
-      const compile = (type, source) => {
-        const shader = gl.createShader(type); gl.shaderSource(shader, source); gl.compileShader(shader);
-        if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {const message=gl.getShaderInfoLog(shader);gl.deleteShader(shader);throw new Error(message);}
-        return shader;
-      };
-      this.program = gl.createProgram();
-      let vs,fs;
-      try{
-        vs=compile(gl.VERTEX_SHADER,vertex);fs=compile(gl.FRAGMENT_SHADER,fragment);
-        gl.attachShader(this.program,vs);gl.attachShader(this.program,fs);gl.linkProgram(this.program);
-        if (!gl.getProgramParameter(this.program, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(this.program));
-      }catch(error){gl.deleteProgram(this.program);this.program=null;throw error;}
-      finally{if(vs)gl.deleteShader(vs);if(fs)gl.deleteShader(fs);}
-      gl.useProgram(this.program);
+      this.cancelCompile(true);
       const buffer = this.buffer=gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
       gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1,-1, 1,-1, -1,1, -1,1, 1,-1, 1,1]), gl.STATIC_DRAW);
-      const position = gl.getAttribLocation(this.program, 'aPosition');
-      gl.enableVertexAttribArray(position); gl.vertexAttribPointer(position, 2, gl.FLOAT, false, 0, 0);
-      this.uniforms = Object.fromEntries(['uShadowStride','uDensity','uFormation','uSize','uResolution','uRadius','uTime','uDetailScale','uMarchSteps','uVaporDensity','uLightDirection','uGlare','uGlareTint','uPointLight','uPointColor','uPointPower','uPointReach','uElectricGlow','uEdgeFade','uLit','uShade'].map(key => [key,gl.getUniformLocation(this.program,key)]));
       this.texture = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D,this.texture);
       gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MIN_FILTER,gl.LINEAR);
       gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MAG_FILTER,gl.LINEAR);
       gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_S,gl.CLAMP_TO_EDGE);
       gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_T,gl.CLAMP_TO_EDGE);
       gl.pixelStorei(gl.UNPACK_ALIGNMENT,1);
-      gl.uniform1i(this.uniforms.uDensity,0);
-      gl.uniform1i(this.uniforms.uFormation,1);
       this.fullFormationTexture=gl.createTexture();
       gl.activeTexture(gl.TEXTURE1);gl.bindTexture(gl.TEXTURE_2D,this.fullFormationTexture);
       gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MIN_FILTER,gl.LINEAR);
@@ -383,6 +425,28 @@ class CloudVolume {
       if(this.field&&!this.options.sharedBuffer){
         gl.texImage2D(gl.TEXTURE_2D,0,gl.RGB8,this.gw,this.gh,0,gl.RGB,gl.UNSIGNED_BYTE,null);
         this.dirty=true;this.upload();
+      }
+      const program=gl.createProgram(),shaders=[];
+      for(const [type,source]of [[gl.VERTEX_SHADER,vertex],[gl.FRAGMENT_SHADER,fragment]]){
+        const s=gl.createShader(type);shaders.push(s);gl.shaderSource(s,source);gl.compileShader(s);gl.attachShader(program,s);
+      }
+      gl.bindAttribLocation(program,0,'aPosition');gl.linkProgram(program);
+      const parallel=gl.getExtension('KHR_parallel_shader_compile');
+      if(parallel&&typeof parallel.COMPLETION_STATUS_KHR==='number'){
+        if(!this.ready){this.ready=new Promise((resolve,reject)=>{this.resolveReady=resolve;this.rejectReady=reject;});this.ready.catch(()=>{});}
+        this.compileJob={program,shaders};
+        this.pollCompile(parallel);
+      }else{
+        try{
+          this.activateProgram(this.finishProgram({program,shaders}));
+          if(!this.ready)this.ready=Promise.resolve(this);
+          else{this.resolveReady?.(this);this.resolveReady=this.rejectReady=null;}
+          this.options.onReady?.();
+        }catch(error){
+          gl.deleteTexture(this.texture);gl.deleteTexture(this.fullFormationTexture);gl.deleteBuffer(this.buffer);
+          this.texture=this.fullFormationTexture=this.buffer=this.program=null;
+          throw error;
+        }
       }
     }
     configure(patch={}){
@@ -822,7 +886,7 @@ class CloudVolume {
       return true;
     }
     destroy(){
-      if(this.destroyed)return;this.destroyed=true;this.events.abort();
+      if(this.destroyed)return;this.destroyed=true;this.events.abort();this.cancelCompile(true);
       for(const layer of this.layers.keys())this.releaseLayer(layer);
       if(!this.gl.isContextLost()){
         if(this.texture)this.gl.deleteTexture(this.texture);
@@ -1226,21 +1290,31 @@ function customFragment(body,uniforms={}){
  if(body!=null){const start=source.indexOf('float cloud(vec3 p){'),end=source.indexOf('float segmentDistance',start);const base=source.slice(start,end).replace('float cloud(vec3 p)','float cloudBase(vec3 p)');source=source.slice(0,start)+base+'float cloud(vec3 p){'+body+'}\n'+source.slice(end);}
  return source.replace('out vec4 color;',declarations+'\nout vec4 color;');
 }
-function compileProgram(gl,fragmentSource,position){
+function beginProgram(gl,fragmentSource,position){
  const program=gl.createProgram(),shaders=[];
- try{
-  for(const [type,source]of [[gl.VERTEX_SHADER,vertex],[gl.FRAGMENT_SHADER,fragmentSource]]){
-   const shader=gl.createShader(type);shaders.push(shader);
-   gl.shaderSource(shader,source);gl.compileShader(shader);
-   if(!gl.getShaderParameter(shader,gl.COMPILE_STATUS))throw new Error(gl.getShaderInfoLog(shader));
-   gl.attachShader(program,shader);
-  }
-  if(position!==undefined)gl.bindAttribLocation(program,position,'aPosition');
-  gl.linkProgram(program);
-  if(!gl.getProgramParameter(program,gl.LINK_STATUS))throw new Error(gl.getProgramInfoLog(program));
-  return program;
- }catch(error){gl.deleteProgram(program);throw error;}
- finally{for(const shader of shaders)gl.deleteShader(shader);}
+ for(const [type,source]of [[gl.VERTEX_SHADER,vertex],[gl.FRAGMENT_SHADER,fragmentSource]]){
+  const shader=gl.createShader(type);shaders.push(shader);
+  gl.shaderSource(shader,source);gl.compileShader(shader);gl.attachShader(program,shader);
+ }
+ if(position!==undefined)gl.bindAttribLocation(program,position,'aPosition');
+ gl.linkProgram(program);
+ return {program,shaders};
+}
+function finishProgram(gl,{program,shaders}){
+ const ok=gl.getProgramParameter(program,gl.LINK_STATUS);
+ if(!ok){
+  const logs=[];
+  for(const s of shaders)if(!gl.getShaderParameter(s,gl.COMPILE_STATUS))logs.push(gl.getShaderInfoLog(s));
+  logs.push(gl.getProgramInfoLog(program));
+  for(const s of shaders)gl.deleteShader(s);
+  gl.deleteProgram(program);
+  throw new Error(logs.filter(Boolean).join('\n')||'Shader program link failed.');
+ }
+ for(const s of shaders)gl.deleteShader(s);
+ return program;
+}
+function compileProgram(gl,fragmentSource,position){
+ return finishProgram(gl,beginProgram(gl,fragmentSource,position));
 }
 class CloudScene {
  constructor(canvas,options={}){
@@ -1256,11 +1330,12 @@ class CloudScene {
   this.measurements=[];this.renderScale=1;this.gpuMs=null;this.timingSamples=0;this.adjustAt=0;
   this.device=deviceProfile(gl);this.frameMs=null;this.paceAt=0;this.paceSamples=0;this.paceAdjustAt=0;
   this.lightBuffers={positions:new Float32Array(12),colors:new Float32Array(9),starts:new Float32Array(128),ends:new Float32Array(128),boltColors:new Float32Array(96),radii:new Float32Array(3)};
-  this.program=null;this.buffer=null;this.position=0;this.amortized=null;this.presentProgram=null;this.fieldTexture=null;this.timer=null;this.uniforms={};
+  this.program=null;this.buffer=null;this.position=0;this.amortized=null;this.presentProgram=null;this.presentJob=null;this.compileJob=null;this.fieldTexture=null;this.timer=null;this.uniforms={};this.failed=false;
   this.customUniforms=Object.fromEntries(Object.entries(options.uniforms||{}).map(([key,value])=>[key,{value:Array.isArray(value)?value.slice():value,location:null}]));
   this.fragmentSource=customFragment(options.densityShader,options.uniforms);
   this.extent=[2,2,2];this.hasField=false;this.fieldData=null;
   this.reduced=globalThis.matchMedia?.('(prefers-reduced-motion: reduce)');this.paused=this.reduced?.matches||false;
+  this.ready=null;this.resolveReady=null;this.rejectReady=null;
   const listen=(target,name,fn)=>target?.addEventListener?.(name,fn,{signal:this.events.signal});
   if(this.options.interactive){
    listen(canvas,'pointermove',e=>this.setPointer(e));listen(canvas,'pointerdown',e=>this.setPointer(e));
@@ -1271,46 +1346,109 @@ class CloudScene {
   listen(globalThis.document,'visibilitychange',()=>{this.last=null;if(globalThis.document.hidden){cancelAnimationFrame(this.frame);this.frame=0;this.lightning.clear();}else if(this.running)this.schedule();});
   listen(canvas,'webglcontextlost',e=>{
    e.preventDefault();cancelAnimationFrame(this.frame);this.frame=0;this.last=null;
+   this.cancelCompile('compileJob');this.cancelCompile('presentJob');
    this.measurements.length=0;this.amortized=null;this.presentProgram=null;this.program=null;this.buffer=null;this.fieldTexture=null;this.timer=null;
    this.options.onContextLost?.();
   });
   listen(canvas,'webglcontextrestored',()=>{
-   if(this.destroyed)return;
+   if(this.destroyed||this.failed)return;
    this.initGpu();this.resize(this.width,this.height);
    if(this.running&&!this.paused)this.schedule();
    this.options.onContextRestored?.();
   });
   try{
-   if(gl.isContextLost())this.loseExtension?.restoreContext?.();
-   else this.initGpu();
-   this.setOptions({quality:this.options.quality,...options});this.resize();
+   this.setOptions({quality:this.options.quality,...options});
+   if(gl.isContextLost()){
+    this.ready=new Promise((resolve,reject)=>{this.resolveReady=resolve;this.rejectReady=reject;});
+    this.ready.catch(()=>{});
+    this.loseExtension?.restoreContext?.();
+   }else this.initGpu();
+   this.resize();
    if(globalThis.ResizeObserver){this.observer=new ResizeObserver(()=>this.resize());this.observer.observe(canvas);}
    if(options.autoStart!==false)this.start();
   }catch(error){this.destroy();throw error;}
  }
+ cancelCompile(slot,deleteResources=false){
+  const job=this[slot];if(!job)return;
+  if(job.raf)cancelAnimationFrame(job.raf);if(job.timer)clearTimeout(job.timer);
+  if(deleteResources&&!this.gl.isContextLost()){for(const s of job.shaders)this.gl.deleteShader(s);this.gl.deleteProgram(job.program);}
+  this[slot]=null;
+ }
+ pollCompile(slot,ext,onLinked,onFailed){
+  const job=this[slot];if(!job)return;
+  if(this.destroyed||this.failed||this.gl.isContextLost()){this.cancelCompile(slot);return;}
+  if(this.gl.getProgramParameter(job.program,ext.COMPLETION_STATUS_KHR)){
+   this.cancelCompile(slot);
+   try{onLinked(finishProgram(this.gl,job));}catch(error){onFailed?.(error);}
+   return;
+  }
+  const step=()=>{job.raf=0;if(job.timer){clearTimeout(job.timer);job.timer=0;}this.pollCompile(slot,ext,onLinked,onFailed);};
+  if(typeof requestAnimationFrame==='function')job.raf=requestAnimationFrame(step);
+  job.timer=setTimeout(()=>{if(job.raf){cancelAnimationFrame(job.raf);job.raf=0;}job.timer=0;this.pollCompile(slot,ext,onLinked,onFailed);},16);
+ }
+ activateProgram(program){
+  const gl=this.gl;this.program=program;
+  gl.useProgram(program);gl.bindBuffer(gl.ARRAY_BUFFER,this.buffer);
+  const position=gl.getAttribLocation(program,'aPosition');gl.enableVertexAttribArray(position);gl.vertexAttribPointer(position,2,gl.FLOAT,false,0,0);
+  this.position=position;
+  this.uniforms=Object.fromEntries(['uOctaves','uSelfShadow','uLightSamples','uMaxLights','uBackgroundOpacity','uLightRadii[0]','uShadowStride','uResolution','uTime','uCoverage','uAmbient','uExposure','uSteps','uLights[0]','uLightColors[0]','uBolts[0]','uBoltEnds[0]','uBoltColors[0]','uBoltCount','uPreset','uShape','uDetail','uCloudColor','uBackground','uField','uHasField','uExtent','uDensityScale','uNoiseScale','uSoftness','uErosion','uExtinction','uShadowStrength','uLightIntensity','uLightFalloff','uViewScale','uVolumeDepth','uShapeRadius','uWindDirection','uLightDirection','uOffset','uScale'].map(k=>[k,gl.getUniformLocation(program,k)]));
+  for(const [key,entry]of Object.entries(this.customUniforms))entry.location=gl.getUniformLocation(program,key);
+  gl.uniform1i(this.uniforms.uField,0);
+ }
+ failAsync(error){
+  if(this.destroyed||this.failed)return;
+  this.failed=true;cancelAnimationFrame(this.frame);this.frame=0;this.last=null;
+  this.cancelCompile('compileJob',true);this.cancelCompile('presentJob',true);
+  this.observer?.disconnect();this.lightning.clear();
+  if(!this.gl.isContextLost()){
+   for(const query of this.measurements)this.gl.deleteQuery(query);
+   this.releaseAmortized();
+   if(this.presentProgram)this.gl.deleteProgram(this.presentProgram);
+   if(this.fieldTexture)this.gl.deleteTexture(this.fieldTexture);
+   if(this.buffer)this.gl.deleteBuffer(this.buffer);
+   if(this.program)this.gl.deleteProgram(this.program);
+   this.canvas.addEventListener?.('webglcontextlost',e=>e.preventDefault(),{once:true});
+   this.loseExtension?.loseContext?.();
+  }
+  this.measurements.length=0;this.amortized=null;this.presentProgram=null;this.fieldTexture=null;this.buffer=null;this.program=null;
+  this.rejectReady?.(error);this.resolveReady=this.rejectReady=null;
+  this.options.onError?.(error);
+ }
  initGpu(){
-  const gl=this.gl;if(gl.isContextLost())return;
+  const gl=this.gl;if(gl.isContextLost()||this.failed)return;
   if(!this.loseExtension){this.loseExtension=gl.getExtension('WEBGL_lose_context');if(this.loseExtension)lostExtensions.set(this.canvas,this.loseExtension);}
   const timer=gl.getExtension('EXT_disjoint_timer_query_webgl2');
   this.timer=timer&&typeof timer.TIME_ELAPSED_EXT==='number'?timer:null;
   this.measurements=[];this.amortized=null;this.presentProgram=null;
-  this.program=compileProgram(gl,this.fragmentSource);
+  this.cancelCompile('compileJob',true);this.cancelCompile('presentJob',true);
   this.buffer=gl.createBuffer();gl.bindBuffer(gl.ARRAY_BUFFER,this.buffer);gl.bufferData(gl.ARRAY_BUFFER,new Float32Array([-1,-1,1,-1,-1,1,-1,1,1,-1,1,1]),gl.STATIC_DRAW);
-  gl.useProgram(this.program);const position=gl.getAttribLocation(this.program,'aPosition');gl.enableVertexAttribArray(position);gl.vertexAttribPointer(position,2,gl.FLOAT,false,0,0);
-  this.position=position;
-  this.uniforms=Object.fromEntries(['uOctaves','uSelfShadow','uLightSamples','uMaxLights','uBackgroundOpacity','uLightRadii[0]','uShadowStride','uResolution','uTime','uCoverage','uAmbient','uExposure','uSteps','uLights[0]','uLightColors[0]','uBolts[0]','uBoltEnds[0]','uBoltColors[0]','uBoltCount','uPreset','uShape','uDetail','uCloudColor','uBackground','uField','uHasField','uExtent','uDensityScale','uNoiseScale','uSoftness','uErosion','uExtinction','uShadowStrength','uLightIntensity','uLightFalloff','uViewScale','uVolumeDepth','uShapeRadius','uWindDirection','uLightDirection','uOffset','uScale'].map(k=>[k,gl.getUniformLocation(this.program,k)]));
-  for(const [key,entry]of Object.entries(this.customUniforms))entry.location=gl.getUniformLocation(this.program,key);
   this.fieldTexture=gl.createTexture();gl.bindTexture(gl.TEXTURE_3D,this.fieldTexture);
   for(const key of [gl.TEXTURE_MIN_FILTER,gl.TEXTURE_MAG_FILTER])gl.texParameteri(gl.TEXTURE_3D,key,gl.LINEAR);
   for(const key of [gl.TEXTURE_WRAP_S,gl.TEXTURE_WRAP_T,gl.TEXTURE_WRAP_R])gl.texParameteri(gl.TEXTURE_3D,key,gl.CLAMP_TO_EDGE);
   gl.pixelStorei(gl.UNPACK_ALIGNMENT,1);
   if(this.hasField&&this.fieldData)gl.texImage3D(gl.TEXTURE_3D,0,gl.R8,this.fieldData.width,this.fieldData.height,this.fieldData.depth,0,gl.RED,gl.UNSIGNED_BYTE,this.fieldData.data);
   else gl.texImage3D(gl.TEXTURE_3D,0,gl.R8,1,1,1,0,gl.RED,gl.UNSIGNED_BYTE,new Uint8Array([0]));
+  const parallel=gl.getExtension('KHR_parallel_shader_compile');
+  const job=beginProgram(gl,this.fragmentSource,0);
+  if(parallel&&typeof parallel.COMPLETION_STATUS_KHR==='number'){
+   if(!this.ready){this.ready=new Promise((resolve,reject)=>{this.resolveReady=resolve;this.rejectReady=reject;});this.ready.catch(()=>{});}
+   this.compileJob=job;
+   this.pollCompile('compileJob',parallel,program=>{
+    this.activateProgram(program);
+    this.resolveReady?.(this);this.resolveReady=this.rejectReady=null;
+    if(this.paused){if(this.running||this.reduced?.matches)this.render(this.time,0);}
+    else if(this.running){this.render(this.time,0);this.schedule();}
+   },error=>this.failAsync(error));
+  }else{
+   this.activateProgram(finishProgram(gl,job));
+   if(!this.ready)this.ready=Promise.resolve(this);
+   else{this.resolveReady?.(this);this.resolveReady=this.rejectReady=null;}
+  }
  }
  setOptions(patch={}){
   const previousFps=this.options.fps;
   for(const key of ['interactive','autoStart','powerPreference','failIfMajorPerformanceCaveat'])if(key in patch&&patch[key]!==this.options[key])throw new TypeError('Changing '+key+' requires a new CloudScene.');
-  for(const key of ['onFrame','onStrike','onContextLost','onContextRestored'])if(key in patch&&patch[key]!=null&&typeof patch[key]!=='function')throw new TypeError(key+' must be a function.');
+  for(const key of ['onFrame','onStrike','onError','onContextLost','onContextRestored'])if(key in patch&&patch[key]!=null&&typeof patch[key]!=='function')throw new TypeError(key+' must be a function.');
   for(const key of ['color','cloudColor','background'])if(key in patch&&!(typeof patch[key]==='string'&&/^#[0-9a-f]{6}$/i.test(patch[key])||Array.isArray(patch[key])&&patch[key].length===3&&Array.from(patch[key]).every(Number.isFinite)))throw new TypeError(key+' must be a hex color or RGB vector.');
   for(const key of ['lightning','transparent','interactive','autoStart'])if(key in patch&&typeof patch[key]!=='boolean')throw new TypeError(key+' must be boolean.');
   if('densityShader' in patch&&patch.densityShader!==this.options.densityShader)throw new TypeError('A new densityShader requires a new CloudScene.');
@@ -1332,7 +1470,7 @@ class CloudScene {
   }
   if('transparent' in patch)this.options.backgroundOpacity=patch.transparent?0:1;
   if(patch.quality)Object.assign(this.options,profiles[patch.quality==='auto'?this.device.profile:patch.quality]);
-  for(const key of ['quality','color','lightning','lightningMode','shape','cloudColor','background','onFrame','onStrike','onContextLost','onContextRestored','windDirection','lightDirection','offset','scale'])if(key in patch)this.options[key]=Array.isArray(patch[key])?patch[key].slice():patch[key];
+  for(const key of ['quality','color','lightning','lightningMode','shape','cloudColor','background','onFrame','onStrike','onError','onContextLost','onContextRestored','windDirection','lightDirection','offset','scale'])if(key in patch)this.options[key]=Array.isArray(patch[key])?patch[key].slice():patch[key];
   for(const [key,{min,max}]of Object.entries(ranges))if(key in patch)this.options[key]=clamp(patch[key],min,max);
   if('seed' in patch){this.lightning.configure('seed',patch.seed);this.options.seed=this.lightning.getState().settings.seed;}
   for(const [key,kind]of Object.entries(lightningSettings))if(key in patch)this.lightning.configure(kind,this.options[key]);
@@ -1384,9 +1522,9 @@ class CloudScene {
  }
  setPaused(value){const next=Boolean(value);if(next===this.paused)return;this.paused=next;this.last=null;if(this.paused){cancelAnimationFrame(this.frame);this.frame=0;this.lightning.clear();this.render(this.time,0);}else if(this.running)this.schedule();}
  strike(x=this.pointer.x,y=this.pointer.y){this.setPointer(x,y);this.lightning.trigger();}
- schedule(){if(!this.destroyed&&this.running&&!this.paused&&!globalThis.document?.hidden&&!this.gl.isContextLost()&&!this.frame)this.frame=requestAnimationFrame(t=>this.tick(t));}
+ schedule(){if(!this.destroyed&&!this.failed&&this.running&&!this.paused&&!globalThis.document?.hidden&&!this.gl.isContextLost()&&!this.frame)this.frame=requestAnimationFrame(t=>this.tick(t));}
  tick(now){
-  this.frame=0;if(!this.running||this.destroyed||this.paused||globalThis.document?.hidden||this.gl.isContextLost())return;
+  this.frame=0;if(!this.running||this.destroyed||this.failed||this.paused||globalThis.document?.hidden||this.gl.isContextLost())return;
   const fresh=this.last===null,interval=1000/this.options.fps;
   if(fresh||now+.0001>=this.nextRender){
    const dt=fresh?interval/1000:Math.min(.5,(now-this.last)/1000);
@@ -1410,7 +1548,7 @@ class CloudScene {
   scale=Math.max(this.options.minRenderScale,Math.min(1,scale));
   if(Math.abs(scale-this.renderScale)>.01){this.renderScale=scale;this.paceAdjustAt=this.paceSamples;this.resize(this.width,this.height);}
  }
- start(){if(this.destroyed)throw new Error('CloudScene was destroyed.');this.running=true;this.schedule();return this;}
+ start(){if(this.destroyed)throw new Error('CloudScene was destroyed.');if(this.failed)return this;this.running=true;this.schedule();return this;}
  stop(){this.running=false;cancelAnimationFrame(this.frame);this.frame=0;this.last=null;return this;}
  getPerformance(){return {gpuTimingAvailable:Boolean(this.timer),gpuMs:this.gpuMs,frameMs:this.frameMs,renderScale:this.renderScale,width:this.canvas.width,height:this.canvas.height,software:this.device.software,profile:this.options.quality==='auto'?this.device.profile:this.options.quality,contextLost:Boolean(this.gl.isContextLost())};}
  pollTiming(){
@@ -1433,7 +1571,7 @@ class CloudScene {
  }
  render(time=this.time,dt=0){
   if(!Number.isFinite(time)||!Number.isFinite(dt)||dt<0)throw new TypeError('Render time and dt must be finite; dt must be nonnegative.');
-  const gl=this.gl;if(this.destroyed||gl.isContextLost()||!this.program)return false;
+  const gl=this.gl;if(this.destroyed||this.failed||gl.isContextLost()||!this.program)return false;
   this.pollTiming();
   const color=rgb(this.options.color);
   const active=this.options.lightning&&!this.paused&&(this.options.lightningMode!=='hover'||this.pointer.active)&&!this.reduced?.matches;
@@ -1478,16 +1616,28 @@ class CloudScene {
  // Three canvas-sized targets: the previous and next finished cloud frames, and the one being drawn.
  amortizedTargets(bands){
   const gl=this.gl,width=this.canvas.width,height=this.canvas.height;
+  if(!this.presentProgram){
+   if(!this.presentJob){
+    const parallel=gl.getExtension('KHR_parallel_shader_compile');
+    const job=beginProgram(gl,presentFragment,this.position);
+    const setup=program=>{
+     this.presentProgram=program;this.presentMix=gl.getUniformLocation(program,'uMix');
+     gl.useProgram(program);gl.uniform1i(gl.getUniformLocation(program,'uPrev'),1);gl.uniform1i(gl.getUniformLocation(program,'uNext'),2);
+     if(this.program)gl.useProgram(this.program);
+    };
+    if(parallel&&typeof parallel.COMPLETION_STATUS_KHR==='number'){
+     this.presentJob=job;
+     this.pollCompile('presentJob',parallel,setup,error=>this.failAsync(error));
+     return null;
+    }
+    setup(finishProgram(gl,job));
+   }else return null;
+  }
   if(this.amortized?.width===width&&this.amortized.height===height){
    if(this.amortized.bands!==bands){this.amortized.bands=bands;this.amortized.band=0;this.amortized.ready=false;}
    return this.amortized;
   }
   this.releaseAmortized();
-  if(!this.presentProgram){
-   const program=compileProgram(gl,presentFragment,this.position);
-   this.presentProgram=program;this.presentMix=gl.getUniformLocation(program,'uMix');
-   gl.useProgram(program);gl.uniform1i(gl.getUniformLocation(program,'uPrev'),1);gl.uniform1i(gl.getUniformLocation(program,'uNext'),2);
-  }
   const target=()=>{
    const texture=gl.createTexture();gl.bindTexture(gl.TEXTURE_2D,texture);
    for(const key of [gl.TEXTURE_MIN_FILTER,gl.TEXTURE_MAG_FILTER])gl.texParameteri(gl.TEXTURE_2D,key,gl.NEAREST);
@@ -1526,6 +1676,7 @@ class CloudScene {
  }
  destroy(){
   if(this.destroyed)return;this.stop();this.destroyed=true;this.events.abort();this.observer?.disconnect();this.lightning.clear();
+  this.cancelCompile('compileJob',true);this.cancelCompile('presentJob',true);
   if(!this.gl.isContextLost()){
    for(const query of this.measurements)this.gl.deleteQuery(query);
    this.releaseAmortized();
@@ -1688,7 +1839,7 @@ class TextManager{
    p.x=x;p.y=y;p.at=now;p.active=sweep&&inside&&!(touch&&type==='pointerup');e.inputDirty=true;this.wake();
   }
  }
- ensureVolume(){if(this.volumeError)throw this.volumeError;if(!this.volume)try{this.volume=new CloudVolume({sharedBuffer:true,failIfMajorPerformanceCaveat:true,powerPreference:'low-power',onContextLost:()=>{for(const owner of this.owners)owner.setPlayMode(false);for(const e of this.entries){resetPointer(e);e.layer=null;e.maskDirty=true;e.element.classList.remove(readyClass);e.canvas.getContext('2d')?.clearRect(0,0,e.canvas.width,e.canvas.height);}},onContextRestored:()=>{for(const owner of this.owners)if(owner.contextError){owner.error=null;owner.contextError=false;owner.paused=owner.userPaused||false;for(const e of owner.entries){e.canvas.style.removeProperty('display');e.maskDirty=e.dirty=true;}}for(const e of this.entries){e.layer=null;e.maskDirty=e.dirty=true;e.lastDraw=0;}this.wake();}});this.generation=this.volume.generation;}catch(error){this.volumeError=error;throw error;}if(this.volume.generation!==this.generation){this.generation=this.volume.generation;for(const e of this.entries){e.layer=null;e.maskDirty=e.dirty=true;}}return this.volume;}
+ ensureVolume(){if(this.volumeError)throw this.volumeError;if(!this.volume)try{this.volume=new CloudVolume({sharedBuffer:true,failIfMajorPerformanceCaveat:true,powerPreference:'low-power',onReady:()=>this.wake(),onError:error=>{this.volumeError=error;for(const owner of this.owners)owner.fail(error);},onContextLost:()=>{for(const owner of this.owners)owner.setPlayMode(false);for(const e of this.entries){resetPointer(e);e.layer=null;e.maskDirty=true;e.element.classList.remove(readyClass);e.canvas.getContext('2d')?.clearRect(0,0,e.canvas.width,e.canvas.height);}},onContextRestored:()=>{for(const owner of this.owners)if(owner.contextError){owner.error=null;owner.contextError=false;owner.paused=owner.userPaused||false;for(const e of owner.entries){e.canvas.style.removeProperty('display');e.maskDirty=e.dirty=true;}}for(const e of this.entries){e.layer=null;e.maskDirty=e.dirty=true;e.lastDraw=0;}this.wake();}});this.generation=this.volume.generation;}catch(error){this.volumeError=error;throw error;}if(this.volume.generation!==this.generation){this.generation=this.volume.generation;for(const e of this.entries){e.layer=null;e.maskDirty=e.dirty=true;}}return this.volume;}
  evict(){const cached=[...this.entries].filter(e=>e.layer);if(cached.length<32)return;const oldest=cached.filter(e=>!e.visible).sort((a,b)=>a.lastDraw-b.lastDraw)[0];if(oldest){this.volume.releaseLayer(oldest.layer);oldest.layer=null;oldest.maskDirty=true;}}
  tick(now){
   this.frame=0;if(this.doc.hidden)return;
@@ -1702,8 +1853,8 @@ class TextManager{
    const rate=moving?o.fps:o.idleFps;
    if(e.maskDirty||e.dirty||e.inputDirty&&(resting||!e.lastDraw||now-e.lastDraw>=1000/o.fps)||!resting&&rate>0&&now-e.lastDraw>=1000/rate){chosen=e;this.cursor=index+1;break;}
   }
-  if(chosen){const started=clock(),building=chosen.maskDirty;try{this.draw(chosen,now);}catch(error){chosen.owner.fail(error,Boolean(this.volume?.gl.isContextLost()));}this.lastCpuMs=clock()-started;
-   if(!building&&!chosen.owner.error){
+  if(chosen){const started=clock(),building=chosen.maskDirty,compiling=Boolean(this.volume?.compileJob);try{this.draw(chosen,now);}catch(error){chosen.owner.fail(error,Boolean(this.volume?.gl.isContextLost()));}this.lastCpuMs=clock()-started;
+   if(!building&&!compiling&&!this.volume?.compileJob&&!chosen.owner.error){
     const o=chosen.owner.options;chosen.cpuAverage=chosen.cpuAverage===undefined?this.lastCpuMs:chosen.cpuAverage*.8+this.lastCpuMs*.2;chosen.samples++;
     if(o.adaptiveQuality&&chosen.samples>=4&&chosen.samples-chosen.adjustAt>=8){
      let scale=chosen.renderScale;
@@ -1714,7 +1865,7 @@ class TextManager{
    }
   }
   }finally{
-   if(list.some(e=>!e.owner.error&&!e.owner.destroyed&&e.visible&&e.element.isConnected&&(e.maskDirty||e.dirty||e.inputDirty||!e.owner.paused&&!this.reducedMotion&&(e.owner.options.idleFps>0||e.owner.wind?.strength>0||e.simulating||e.formation<1||e.pointer.down&&e.owner.playMode||now-this.scrollAt<160&&e.owner.options.scrollWind>0))))this.wake();
+   if(!this.volume?.compileJob&&list.some(e=>!e.owner.error&&!e.owner.destroyed&&e.visible&&e.element.isConnected&&(e.maskDirty||e.dirty||e.inputDirty||!e.owner.paused&&!this.reducedMotion&&(e.owner.options.idleFps>0||e.owner.wind?.strength>0||e.simulating||e.formation<1||e.pointer.down&&e.owner.playMode||now-this.scrollAt<160&&e.owner.options.scrollWind>0))))this.wake();
   }
  }
  draw(e,now){
@@ -1723,12 +1874,13 @@ class TextManager{
   if(e.maskDirty){
    resetPointer(e);mask=paintMask(e);
    if(!mask){
-    if(e.layer){this.volume.releaseLayer(e.layer);e.layer=null;}
+    if(e.layer){this.volume?.releaseLayer(e.layer);e.layer=null;}
     e.canvas.getContext('2d')?.clearRect(0,0,e.canvas.width,e.canvas.height);e.element.classList.remove(readyClass);
     e.maskDirty=e.dirty=e.inputDirty=e.visible=e.simulating=false;e.effects=[];e.gustPending=e.hiddenElapsed=0;return;
    }
   }
   const volume=this.ensureVolume();
+  if(!volume.program&&!volume.gl.isContextLost())return;
   if(mask){
    if(e.layer){volume.releaseLayer(e.layer);e.layer=null;}
    this.evict();e.layer=volume.createLayer(mask,{...profiles[o.quality],scale:e.fontSize*e.scale,puffiness:o.puffiness,shadowStride:o.shadowStride??3,minCell:1.2,minRadius:2,radiusFactor:.075});

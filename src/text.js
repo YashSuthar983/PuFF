@@ -138,7 +138,7 @@ class TextManager{
    p.x=x;p.y=y;p.at=now;p.active=sweep&&inside&&!(touch&&type==='pointerup');e.inputDirty=true;this.wake();
   }
  }
- ensureVolume(){if(this.volumeError)throw this.volumeError;if(!this.volume)try{this.volume=new CloudVolume({sharedBuffer:true,failIfMajorPerformanceCaveat:true,powerPreference:'low-power',onContextLost:()=>{for(const owner of this.owners)owner.setPlayMode(false);for(const e of this.entries){resetPointer(e);e.layer=null;e.maskDirty=true;e.element.classList.remove(readyClass);e.canvas.getContext('2d')?.clearRect(0,0,e.canvas.width,e.canvas.height);}},onContextRestored:()=>{for(const owner of this.owners)if(owner.contextError){owner.error=null;owner.contextError=false;owner.paused=owner.userPaused||false;for(const e of owner.entries){e.canvas.style.removeProperty('display');e.maskDirty=e.dirty=true;}}for(const e of this.entries){e.layer=null;e.maskDirty=e.dirty=true;e.lastDraw=0;}this.wake();}});this.generation=this.volume.generation;}catch(error){this.volumeError=error;throw error;}if(this.volume.generation!==this.generation){this.generation=this.volume.generation;for(const e of this.entries){e.layer=null;e.maskDirty=e.dirty=true;}}return this.volume;}
+ ensureVolume(){if(this.volumeError)throw this.volumeError;if(!this.volume)try{this.volume=new CloudVolume({sharedBuffer:true,failIfMajorPerformanceCaveat:true,powerPreference:'low-power',onReady:()=>this.wake(),onError:error=>{this.volumeError=error;for(const owner of this.owners)owner.fail(error);},onContextLost:()=>{for(const owner of this.owners)owner.setPlayMode(false);for(const e of this.entries){resetPointer(e);e.layer=null;e.maskDirty=true;e.element.classList.remove(readyClass);e.canvas.getContext('2d')?.clearRect(0,0,e.canvas.width,e.canvas.height);}},onContextRestored:()=>{for(const owner of this.owners)if(owner.contextError){owner.error=null;owner.contextError=false;owner.paused=owner.userPaused||false;for(const e of owner.entries){e.canvas.style.removeProperty('display');e.maskDirty=e.dirty=true;}}for(const e of this.entries){e.layer=null;e.maskDirty=e.dirty=true;e.lastDraw=0;}this.wake();}});this.generation=this.volume.generation;}catch(error){this.volumeError=error;throw error;}if(this.volume.generation!==this.generation){this.generation=this.volume.generation;for(const e of this.entries){e.layer=null;e.maskDirty=e.dirty=true;}}return this.volume;}
  evict(){const cached=[...this.entries].filter(e=>e.layer);if(cached.length<32)return;const oldest=cached.filter(e=>!e.visible).sort((a,b)=>a.lastDraw-b.lastDraw)[0];if(oldest){this.volume.releaseLayer(oldest.layer);oldest.layer=null;oldest.maskDirty=true;}}
  tick(now){
   this.frame=0;if(this.doc.hidden)return;
@@ -152,8 +152,8 @@ class TextManager{
    const rate=moving?o.fps:o.idleFps;
    if(e.maskDirty||e.dirty||e.inputDirty&&(resting||!e.lastDraw||now-e.lastDraw>=1000/o.fps)||!resting&&rate>0&&now-e.lastDraw>=1000/rate){chosen=e;this.cursor=index+1;break;}
   }
-  if(chosen){const started=clock(),building=chosen.maskDirty;try{this.draw(chosen,now);}catch(error){chosen.owner.fail(error,Boolean(this.volume?.gl.isContextLost()));}this.lastCpuMs=clock()-started;
-   if(!building&&!chosen.owner.error){
+  if(chosen){const started=clock(),building=chosen.maskDirty,compiling=Boolean(this.volume?.compileJob);try{this.draw(chosen,now);}catch(error){chosen.owner.fail(error,Boolean(this.volume?.gl.isContextLost()));}this.lastCpuMs=clock()-started;
+   if(!building&&!compiling&&!this.volume?.compileJob&&!chosen.owner.error){
     const o=chosen.owner.options;chosen.cpuAverage=chosen.cpuAverage===undefined?this.lastCpuMs:chosen.cpuAverage*.8+this.lastCpuMs*.2;chosen.samples++;
     if(o.adaptiveQuality&&chosen.samples>=4&&chosen.samples-chosen.adjustAt>=8){
      let scale=chosen.renderScale;
@@ -164,7 +164,7 @@ class TextManager{
    }
   }
   }finally{
-   if(list.some(e=>!e.owner.error&&!e.owner.destroyed&&e.visible&&e.element.isConnected&&(e.maskDirty||e.dirty||e.inputDirty||!e.owner.paused&&!this.reducedMotion&&(e.owner.options.idleFps>0||e.owner.wind?.strength>0||e.simulating||e.formation<1||e.pointer.down&&e.owner.playMode||now-this.scrollAt<160&&e.owner.options.scrollWind>0))))this.wake();
+   if(!this.volume?.compileJob&&list.some(e=>!e.owner.error&&!e.owner.destroyed&&e.visible&&e.element.isConnected&&(e.maskDirty||e.dirty||e.inputDirty||!e.owner.paused&&!this.reducedMotion&&(e.owner.options.idleFps>0||e.owner.wind?.strength>0||e.simulating||e.formation<1||e.pointer.down&&e.owner.playMode||now-this.scrollAt<160&&e.owner.options.scrollWind>0))))this.wake();
   }
  }
  draw(e,now){
@@ -173,12 +173,13 @@ class TextManager{
   if(e.maskDirty){
    resetPointer(e);mask=paintMask(e);
    if(!mask){
-    if(e.layer){this.volume.releaseLayer(e.layer);e.layer=null;}
+    if(e.layer){this.volume?.releaseLayer(e.layer);e.layer=null;}
     e.canvas.getContext('2d')?.clearRect(0,0,e.canvas.width,e.canvas.height);e.element.classList.remove(readyClass);
     e.maskDirty=e.dirty=e.inputDirty=e.visible=e.simulating=false;e.effects=[];e.gustPending=e.hiddenElapsed=0;return;
    }
   }
   const volume=this.ensureVolume();
+  if(!volume.program&&!volume.gl.isContextLost())return;
   if(mask){
    if(e.layer){volume.releaseLayer(e.layer);e.layer=null;}
    this.evict();e.layer=volume.createLayer(mask,{...profiles[o.quality],scale:e.fontSize*e.scale,puffiness:o.puffiness,shadowStride:o.shadowStride??3,minCell:1.2,minRadius:2,radiusFactor:.075});

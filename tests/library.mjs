@@ -5,7 +5,7 @@ import {CloudScene,StormClouds,CloudVolume,Lightning,CloudPresets,createDensityF
 const calls=[],uniforms={};let id=0,failShader=false;
 const gl=new Proxy({}, {get(_,key){
  if(key==='getShaderParameter')return shader=>!failShader||shader.type!=='FRAGMENT_SHADER';
- if(key==='getProgramParameter')return()=>true;
+ if(key==='getProgramParameter')return()=>!failShader;
  if(key==='createShader')return type=>({id:++id,type});
  if(key==='isContextLost')return()=>false;
  if(key==='getParameter')return name=>name==='MAX_3D_TEXTURE_SIZE'?256:8192;
@@ -67,7 +67,7 @@ assert.equal(calls.slice(failedCalls).filter(c=>c[0]==='deleteShader').length,2,
 const failedVolumeCalls=calls.length;globalThis.document={createElement:()=>canvas};failShader=true;assert.throws(()=>new CloudVolume());failShader=false;delete globalThis.document;
 assert.equal(calls.slice(failedVolumeCalls).filter(c=>c[0]==='deleteShader').length,2);assert.equal(calls.slice(failedVolumeCalls).filter(c=>c[0]==='deleteProgram').length,1,'A failed mask shader releases its program');
 const invalidCalls=calls.length;assert.throws(()=>new CloudScene(canvas,{autoStart:false,coverage:NaN}));
-for(const key of ['deleteProgram','deleteBuffer','deleteTexture'])assert(calls.slice(invalidCalls).some(c=>c[0]===key),'Invalid constructor settings release '+key);
+assert.equal(calls.slice(invalidCalls).filter(c=>c[0]==='compileShader'||c[0]==='createBuffer'||c[0]==='createTexture').length,0,'Invalid constructor settings fail before allocating GPU resources');
 const actor=new Lightning(null);actor.configure('interval',600);actor.configure('branches',8);actor.trigger();
 for(let i=0;i<600;i++){actor.update(1/60,{x:100,y:100,color:[.5,.8,1],enabled:true},()=>[{x:140,y:120}]);assert(actor.getSegments().length<=32);assert(actor.getLights().length<=3);assert(actor.getState().flash<=3);}
 actor.clear();assert.equal(actor.getLights().length,0);
@@ -119,6 +119,68 @@ actor.clear();assert.equal(actor.getLights().length,0);
  second.destroy();assert.equal(calls.filter(c=>c[0].startsWith('delete')).length,deletesBeforeLostDestroy,'destroy() skips GL deletes when context is already lost');
  loseExt.restoreContext();
 }
+
+// Parallel shader compilation (KHR_parallel_shader_compile): non-blocking init, pre-ready calls, async failure, and sync fallback.
+{
+ let completed=false,linkOk=true,statusQueries=0;
+ const khrExt={COMPLETION_STATUS_KHR:0x91B1};
+ const parallelGl=new Proxy(gl,{get(target,key){
+  if(key==='getExtension')return name=>name==='KHR_parallel_shader_compile'?khrExt:null;
+  if(key==='getShaderParameter'){return(...args)=>{statusQueries++;return target.getShaderParameter(...args);};}
+  if(key==='getProgramParameter')return(prog,pname)=>pname===0x91B1?completed:linkOk;
+  if(key==='getShaderInfoLog'||key==='getProgramInfoLog')return()=>'Broken densityShader';
+  return target[key];
+ }});
+ const parallelCanvas={...canvas,getContext:()=>parallelGl};
+ const asyncScene=new CloudScene(parallelCanvas,{autoStart:false,interactive:false,quality:'low'});
+ assert.equal(statusQueries,0,'Parallel compile does not query shader status before link completion');
+ assert.equal(asyncScene.program,null,'Constructor returns before link completion');
+ assert.equal(asyncScene.render(0,0),false,'render() returns false before ready');
+ asyncScene.setOptions({raySteps:20,ambient:.6});
+ asyncScene.setSources([{x:200,y:150,strength:1.5}]);
+ asyncScene.start();
+ completed=true;
+ for(const fn of [...frames.values()]){frames.clear();fn(16);}
+ const resolved=await asyncScene.ready;
+ assert.equal(resolved,asyncScene,'ready resolves to the scene instance');
+ assert(asyncScene.program,'Program is activated once KHR_parallel_shader_compile completes');
+ assert.equal(uniforms.uSteps[0],20,'setOptions before ready takes effect');
+ assert.equal(uniforms['uLights[0]'][0][3],9,'setSources before ready takes effect');
+ asyncScene.destroy();
+
+ // Async compile failure: ready rejects, onError is called, and start/stop/render/setOptions are inert without throwing.
+ completed=false;linkOk=false;failShader=true;
+ let reportedError=null,unhandled=false;
+ const onUnhandled=()=>{unhandled=true;};
+ process.on('unhandledRejection',onUnhandled);
+ const broken=new CloudScene(parallelCanvas,{autoStart:false,interactive:false,densityShader:'return broken;',onError:err=>reportedError=err});
+ completed=true;
+ for(const fn of [...frames.values()]){frames.clear();fn(32);}
+ let rejectedError=null;
+ try{await broken.ready;}catch(err){rejectedError=err;}
+ await new Promise(r=>setTimeout(r,20));
+ process.off('unhandledRejection',onUnhandled);
+ assert(reportedError instanceof Error,'onError receives the compile error');
+ assert.equal(rejectedError,reportedError,'ready rejects with the same error');
+ assert(!unhandled,'Unobserved ready rejection does not trigger unhandledRejection');
+ assert.equal(broken.start(),broken,'start() after async failure returns this without throwing');
+ assert.equal(broken.stop(),broken,'stop() after async failure returns this without throwing');
+ assert.equal(broken.render(0,0),false,'render() after async failure returns false');
+ assert.equal(broken.setOptions({coverage:.5}),broken,'setOptions() after async failure does not throw');
+ broken.destroy();
+ assert.throws(()=>broken.start(),/destroyed/,'Explicit destroy() still makes start() throw');
+ failShader=false;linkOk=true;
+
+ // With KHR_parallel_shader_compile mocked to null, broken shader throws synchronously from constructor as in 0.1.0.
+ const syncGl=new Proxy(gl,{get(target,key){
+  if(key==='getExtension')return name=>name==='KHR_parallel_shader_compile'?null:null;
+  return target[key];
+ }});
+ failShader=true;
+ assert.throws(()=>new CloudScene({...canvas,getContext:()=>syncGl},{autoStart:false,densityShader:'return broken;'}));
+ failShader=false;
+}
+
 
 const context={window:{}};vm.runInNewContext(await readFile(new URL('../dist/puff.js',import.meta.url),'utf8'),context);
 assert.deepEqual(Object.keys(context.window.PuFF).sort(),['CloudText','CloudTimes','CloudControls','CloudPresets','CloudScene','CloudVolume','Lightning','StormClouds','createDensityField'].sort());
