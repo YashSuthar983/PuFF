@@ -64,17 +64,31 @@ console.log('PASS asynchronous GPU timing, bounded queries, disjoint rejection, 
 
 // Automatic resolution without a GPU timer follows the frame cadence; adaptiveQuality:0 keeps it manual.
 {
- const frames=[];globalThis.requestAnimationFrame=fn=>{frames.push(fn);return frames.length;};
- const step=(ms,count,scene)=>{let t=scene.__t??0;for(let i=0;i<count;i++){t+=ms;const fn=frames.shift();fn?.(t);}scene.__t=t;};
- const paced=new CloudScene({...canvas,getContext:()=>noTimer},{autoStart:false,interactive:false,quality:'medium',fps:24});
- paced.start();step(42,4,paced);assert.equal(paced.getPerformance().renderScale,1);
- step(125,40,paced);assert.equal(paced.getPerformance().renderScale,.5,'Frames arriving far behind their slot lower the render scale to the floor');
- assert.equal(paced.getOptions().resolutionScale,1,'Cadence adaptation preserves authored settings');
- step(50,400,paced);assert.equal(paced.getPerformance().renderScale,1,'An on-time cadence (frames on display refreshes) restores the resolution');
- paced.stop();paced.start();step(5000,1,paced);step(50,2,paced);assert.equal(paced.getPerformance().renderScale,1,'A pause or hidden tab is not a slow frame');
- paced.destroy();
- const manual=new CloudScene({...canvas,getContext:()=>noTimer},{autoStart:false,interactive:false,quality:'medium',fps:24,adaptiveQuality:0,resolutionScale:.75});
- manual.start();step(125,60,manual);assert.equal(manual.getPerformance().renderScale,1,'Manual resolution is never adapted');assert.equal(manual.canvas.width,750,'Manual resolutionScale holds');manual.destroy();
+ const frames=[];const timers=new Map();let timerId=0,clockNow=0;
+ const origSetTimeout=globalThis.setTimeout,origClearTimeout=globalThis.clearTimeout;
+ globalThis.setTimeout=(fn,ms)=>{const id=++timerId;timers.set(id,{fn,at:clockNow+ms});return id;};
+ globalThis.clearTimeout=id=>timers.delete(id);
+ globalThis.requestAnimationFrame=fn=>{frames.push(fn);return frames.length;};
+ const step=(ms,count,scene)=>{
+  let t=scene.__t??0;
+  for(let i=0;i<count;i++){
+   t+=ms;clockNow=t;
+   for(const [id,entry]of [...timers.entries()])if(entry.at<=t){timers.delete(id);entry.fn();}
+   const fn=frames.shift();fn?.(t);
+  }
+  scene.__t=t;
+ };
+ try{
+  const paced=new CloudScene({...canvas,getContext:()=>noTimer},{autoStart:false,interactive:false,quality:'medium',fps:24});
+  paced.start();step(42,4,paced);assert.equal(paced.getPerformance().renderScale,1);
+  step(125,40,paced);assert.equal(paced.getPerformance().renderScale,.5,'Frames arriving far behind their slot lower the render scale to the floor');
+  assert.equal(paced.getOptions().resolutionScale,1,'Cadence adaptation preserves authored settings');
+  step(50,400,paced);assert.equal(paced.getPerformance().renderScale,1,'An on-time cadence (frames on display refreshes) restores the resolution');
+  paced.stop();paced.start();step(5000,1,paced);step(50,2,paced);assert.equal(paced.getPerformance().renderScale,1,'A pause or hidden tab is not a slow frame');
+  paced.destroy();
+  const manual=new CloudScene({...canvas,getContext:()=>noTimer},{autoStart:false,interactive:false,quality:'medium',fps:24,adaptiveQuality:0,resolutionScale:.75});
+  manual.start();step(125,60,manual);assert.equal(manual.getPerformance().renderScale,1,'Manual resolution is never adapted');assert.equal(manual.canvas.width,750,'Manual resolutionScale holds');manual.destroy();
+ }finally{globalThis.setTimeout=origSetTimeout;globalThis.clearTimeout=origClearTimeout;}
  // quality:'auto' resolves per device; an explicit quality always wins.
  const software=new Proxy(noTimer,{get(target,key){if(key==='getParameter')return name=>name==='RENDERER'?'Google SwiftShader':8192;return target[key];}});
  const cpu=new CloudScene({...canvas,getContext:()=>software},{autoStart:false,interactive:false});
@@ -96,12 +110,67 @@ console.log('PASS asynchronous GPU timing, bounded queries, disjoint rejection, 
  console.log('PASS cadence-based automatic resolution without GPU timing, pause handling, manual resolution, and auto/cpu quality profiles.');
 }
 {
- const frames=new Map();let serial=0;
+ const frames=new Map(),timers=new Map();let serial=0,timerId=0,clockNow=0;
+ const origSetTimeout=globalThis.setTimeout,origClearTimeout=globalThis.clearTimeout;
+ globalThis.setTimeout=(fn,ms)=>{const id=++timerId;timers.set(id,{fn,at:clockNow+ms});return id;};
+ globalThis.clearTimeout=id=>timers.delete(id);
  globalThis.requestAnimationFrame=fn=>{frames.set(++serial,fn);return serial;};globalThis.cancelAnimationFrame=id=>frames.delete(id);
- for(const fps of [15,24,30,60]){
-  let draws=0;const scene=new CloudScene({...canvas,getContext:()=>noTimer},{autoStart:false,interactive:false,adaptiveQuality:0,fps,onFrame:()=>draws++});scene.start();
-  for(let i=0;i<60;i++){const pending=[...frames.values()];frames.clear();for(const fn of pending)fn(i*1000/60);}
-  assert.equal(draws,fps,'A 60 Hz display delivers the requested '+fps+' FPS without interval drift');scene.destroy();assert.equal(frames.size,0);
- }
- console.log('PASS accurate 15/24/30/60 FPS cadence on a 60 Hz display.');
+ try{
+  for(const fps of [15,24,30,60]){
+   let draws=0;const scene=new CloudScene({...canvas,getContext:()=>noTimer},{autoStart:false,interactive:false,adaptiveQuality:0,fps,onFrame:()=>draws++});scene.start();
+   for(let i=0;i<60;i++){
+    clockNow=i*1000/60;
+    for(const [id,entry]of [...timers.entries()])if(entry.at<=clockNow){timers.delete(id);entry.fn();}
+    const pending=[...frames.values()];frames.clear();for(const fn of pending)fn(clockNow);
+   }
+   assert.equal(draws,fps,'A 60 Hz display delivers the requested '+fps+' FPS without interval drift');scene.destroy();assert.equal(frames.size,0);assert.equal(timers.size,0);
+  }
+  // At fps:12 on a 120 Hz display, rAF callbacks per second are at most ~2x fps, and beforeRender is called once per scheduler-drawn frame.
+  let rafCallbacks=0,beforeCalls=0,frameCalls=0,lastDt=0,hookErrors=0;
+  const origRaf=globalThis.requestAnimationFrame;
+  globalThis.requestAnimationFrame=fn=>origRaf(t=>{rafCallbacks++;fn(t);});
+  let obsCallback=null,obsDisconnected=false;
+  const origIO=globalThis.IntersectionObserver;
+  globalThis.IntersectionObserver=class{constructor(cb){obsCallback=cb;}observe(){}disconnect(){obsDisconnected=true;}};
+  const lowFps=new CloudScene({...canvas,getContext:()=>noTimer},{
+   autoStart:false,interactive:false,adaptiveQuality:0,fps:12,pauseWhenHidden:true,
+   beforeRender:e=>{beforeCalls++;lastDt=e.dt;if(beforeCalls===2)throw new Error('Host beforeRender bug');},
+   onFrame:()=>{frameCalls++;if(frameCalls===3)throw new Error('Host onFrame bug');},
+   onError:()=>hookErrors++
+  });
+  lowFps.start();
+  for(let i=0;i<120;i++){
+   clockNow=i*1000/120;
+   for(const [id,entry]of [...timers.entries()])if(entry.at<=clockNow){timers.delete(id);entry.fn();}
+   const pending=[...frames.values()];frames.clear();for(const fn of pending)fn(clockNow);
+  }
+  assert.equal(frameCalls,12,'12 FPS renders 12 frames in 1 second on a 120 Hz display');
+  assert.equal(beforeCalls,12,'beforeRender is called once per scheduler-drawn frame');
+  assert(lastDt>0.05&&lastDt<0.12,'beforeRender receives a sensible dt');
+  assert(rafCallbacks<=24,`rAF callbacks at 12 FPS on 120 Hz should be <= 24, got ${rafCallbacks}`);
+  assert.equal(hookErrors,2,'Errors in beforeRender and onFrame are caught and routed to onError without killing the loop');
+  lowFps.render(10,0.016);
+  assert.equal(beforeCalls,12,'Direct host render() does not invoke beforeRender');
+  // pauseWhenHidden suspends scheduling when offscreen without changing running, and resumes when visible.
+  obsCallback([{isIntersecting:false}]);
+  assert.equal(lowFps.running,true,'pauseWhenHidden preserves running state');
+  assert.equal(frames.size,0);assert.equal(timers.size,0);
+  const drawsWhileHidden=frameCalls;
+  for(let i=120;i<180;i++){
+   clockNow=i*1000/120;
+   for(const [id,entry]of [...timers.entries()])if(entry.at<=clockNow){timers.delete(id);entry.fn();}
+   const pending=[...frames.values()];frames.clear();for(const fn of pending)fn(clockNow);
+  }
+  assert.equal(frameCalls,drawsWhileHidden,'Offscreen scene does not render while pauseWhenHidden is active');
+  obsCallback([{isIntersecting:true}]);
+  for(let i=180;i<210;i++){
+   clockNow=i*1000/120;
+   for(const [id,entry]of [...timers.entries()])if(entry.at<=clockNow){timers.delete(id);entry.fn();}
+   const pending=[...frames.values()];frames.clear();for(const fn of pending)fn(clockNow);
+  }
+  assert(frameCalls>drawsWhileHidden,'Scene resumes rendering when intersecting again');
+  lowFps.destroy();assert(obsDisconnected,'destroy() disconnects pauseWhenHidden IntersectionObserver');
+  globalThis.IntersectionObserver=origIO;
+ }finally{globalThis.setTimeout=origSetTimeout;globalThis.clearTimeout=origClearTimeout;}
+ console.log('PASS accurate 15/24/30/60 FPS cadence on a 60 Hz display, low-wakeup timer sleep at 12 FPS, beforeRender, and pauseWhenHidden.');
 }

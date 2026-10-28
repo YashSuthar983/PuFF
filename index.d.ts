@@ -24,7 +24,7 @@ export interface CloudSceneOptions {
  coverage?:number; detail?:number; ambient?:number; exposure?:number; drift?:number;
  resolutionScale?:number; cloudColor?:Color; background?:Color; color?:Color;
  lightning?:boolean; lightningPower?:number; boltReach?:number; branches?:number;
- interval?:number; afterglow?:number; cloudGlow?:number; interactive?:boolean; autoStart?:boolean;
+ interval?:number; afterglow?:number; cloudGlow?:number; interactive?:boolean; autoStart?:boolean; pauseWhenHidden?:boolean;
  lightningMode?:LightningMode;randomness?:number;variation?:number;seed?:number;
  density?:number;noiseScale?:number;softness?:number;erosion?:number;extinction?:number;
  shadowStrength?:number;lightIntensity?:number;lightFalloff?:number;viewScale?:number;volumeDepth?:number;shapeRadius?:number;
@@ -36,6 +36,7 @@ export interface CloudSceneOptions {
  windDirection?:Vector3;lightDirection?:Vector3;offset?:Vector3;scale?:Vector3;
  densityShader?:string;uniforms?:Record<string,number|number[]>;
  onStrike?:(event:StrikeEvent)=>void;onFrame?:(event:{time:number;width:number;height:number;lightning:ReturnType<Lightning['getState']>})=>void;
+ beforeRender?:(event:{time:number;dt:number;width:number;height:number})=>void;
  onError?:(error:Error)=>void;onContextLost?:()=>void;onContextRestored?:()=>void;
 }
 export type CloudScenePatch=Omit<CloudSceneOptions,'interactive'|'autoStart'|'densityShader'|'failIfMajorPerformanceCaveat'|'powerPreference'>;

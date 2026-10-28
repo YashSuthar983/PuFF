@@ -1321,21 +1321,20 @@ class CloudScene {
   if(!canvas?.getContext)throw new TypeError('CloudScene needs a canvas.');
   this.canvas=canvas;this.gl=canvas.getContext('webgl2',{alpha:true,depth:false,antialias:false,premultipliedAlpha:false,failIfMajorPerformanceCaveat:options.failIfMajorPerformanceCaveat??false,powerPreference:options.powerPreference||'default'});
   if(!this.gl)throw new Error('CloudScene requires WebGL2.');
-  this.options={...Object.fromEntries(Object.entries(CloudControls.scene).map(([k,v])=>[k,v.default])),timeOfDay:'custom',transparent:false,quality:'auto',preset:'clouds',shape:'layer',...CloudPresets.clouds,...Object.fromEntries(['propagation','pulseCount','pulseSpacing','glowDecay','glowSpread'].map(k=>[k,CloudControls.lightning[k].default])),lightningMode:'random',lightningPower:1,boltReach:140,branches:4,interval:7000,randomness:.7,variation:.35,afterglow:500,cloudGlow:1,color:'#8edaff',windDirection:[.025,-.012,.008],lightDirection:[-.35,.45,.3],offset:[0,0,0],scale:[1,1,1],interactive:true,...options};
+  this.options={...Object.fromEntries(Object.entries(CloudControls.scene).map(([k,v])=>[k,v.default])),timeOfDay:'custom',transparent:false,quality:'auto',preset:'clouds',shape:'layer',...CloudPresets.clouds,...Object.fromEntries(['propagation','pulseCount','pulseSpacing','glowDecay','glowSpread'].map(k=>[k,CloudControls.lightning[k].default])),lightningMode:'random',lightningPower:1,boltReach:140,branches:4,interval:7000,randomness:.7,variation:.35,afterglow:500,cloudGlow:1,color:'#8edaff',windDirection:[.025,-.012,.008],lightDirection:[-.35,.45,.3],offset:[0,0,0],scale:[1,1,1],interactive:true,pauseWhenHidden:false,...options};
   this.events=new AbortController();this.pointer={x:0,y:0,active:false};this.lightning=new Lightning(null,{...(options.seed!==undefined?{seed:options.seed}:{}),onStrike:event=>this.options.onStrike?.(event)});this.options.seed=this.lightning.getState().settings.seed;
-  this.externalLights=[];this.externalSegments=[];this.time=0;this.last=null;this.nextRender=0;this.frame=0;this.running=false;this.paused=false;this.destroyed=false;
+  this.externalLights=[];this.externalSegments=[];this.time=0;this.last=null;this.nextRender=0;this.frame=0;this.sleepTimer=0;this.visible=true;this.visibilityObserver=null;this.running=false;this.paused=false;this.destroyed=false;
   const gl=this.gl;
   this.loseExtension=gl.isContextLost()?lostExtensions.get(canvas)||null:gl.getExtension('WEBGL_lose_context');
   if(this.loseExtension)lostExtensions.set(canvas,this.loseExtension);
-  this.measurements=[];this.renderScale=1;this.gpuMs=null;this.timingSamples=0;this.adjustAt=0;
-  this.device=deviceProfile(gl);this.frameMs=null;this.paceAt=0;this.paceSamples=0;this.paceAdjustAt=0;
+  this.measurements=[];this.renderScale=1;this.gpuMs=this.frameMs=null;this.timingSamples=this.adjustAt=this.paceAt=this.paceSamples=this.paceAdjustAt=0;
+  this.device=deviceProfile(gl);
   this.lightBuffers={positions:new Float32Array(12),colors:new Float32Array(9),starts:new Float32Array(128),ends:new Float32Array(128),boltColors:new Float32Array(96),radii:new Float32Array(3)};
-  this.program=null;this.buffer=null;this.position=0;this.amortized=null;this.presentProgram=null;this.presentJob=null;this.compileJob=null;this.fieldTexture=null;this.timer=null;this.uniforms={};this.failed=false;
+  this.program=this.buffer=this.amortized=this.presentProgram=this.presentJob=this.compileJob=this.fieldTexture=this.timer=this.fieldData=this.ready=this.resolveReady=this.rejectReady=null;
+  this.position=0;this.uniforms={};this.failed=false;this.extent=[2,2,2];this.hasField=false;
   this.customUniforms=Object.fromEntries(Object.entries(options.uniforms||{}).map(([key,value])=>[key,{value:Array.isArray(value)?value.slice():value,location:null}]));
   this.fragmentSource=customFragment(options.densityShader,options.uniforms);
-  this.extent=[2,2,2];this.hasField=false;this.fieldData=null;
   this.reduced=globalThis.matchMedia?.('(prefers-reduced-motion: reduce)');this.paused=this.reduced?.matches||false;
-  this.ready=null;this.resolveReady=null;this.rejectReady=null;
   const listen=(target,name,fn)=>target?.addEventListener?.(name,fn,{signal:this.events.signal});
   if(this.options.interactive){
    listen(canvas,'pointermove',e=>this.setPointer(e));listen(canvas,'pointerdown',e=>this.setPointer(e));
@@ -1343,9 +1342,9 @@ class CloudScene {
    listen(canvas,'pointercancel',()=>{this.pointer.active=false;this.lightning.clear();});
   }
   listen(this.reduced,'change',e=>this.setPaused(e.matches));
-  listen(globalThis.document,'visibilitychange',()=>{this.last=null;if(globalThis.document.hidden){cancelAnimationFrame(this.frame);this.frame=0;this.lightning.clear();}else if(this.running)this.schedule();});
+  listen(globalThis.document,'visibilitychange',()=>{this.last=null;if(globalThis.document.hidden){this.cancelSchedule();this.lightning.clear();}else if(this.running)this.schedule();});
   listen(canvas,'webglcontextlost',e=>{
-   e.preventDefault();cancelAnimationFrame(this.frame);this.frame=0;this.last=null;
+   e.preventDefault();this.cancelSchedule();this.last=null;
    this.cancelCompile('compileJob');this.cancelCompile('presentJob');
    this.measurements.length=0;this.amortized=null;this.presentProgram=null;this.program=null;this.buffer=null;this.fieldTexture=null;this.timer=null;
    this.options.onContextLost?.();
@@ -1397,9 +1396,14 @@ class CloudScene {
  }
  failAsync(error){
   if(this.destroyed||this.failed)return;
-  this.failed=true;cancelAnimationFrame(this.frame);this.frame=0;this.last=null;
+  this.failed=true;this.releaseGpu();
+  this.rejectReady?.(error);this.resolveReady=this.rejectReady=null;
+  this.options.onError?.(error);
+ }
+ releaseGpu(){
+  this.cancelSchedule();this.last=null;
   this.cancelCompile('compileJob',true);this.cancelCompile('presentJob',true);
-  this.observer?.disconnect();this.lightning.clear();
+  this.observer?.disconnect();this.visibilityObserver?.disconnect();this.visibilityObserver=null;this.lightning.clear();
   if(!this.gl.isContextLost()){
    for(const query of this.measurements)this.gl.deleteQuery(query);
    this.releaseAmortized();
@@ -1410,9 +1414,7 @@ class CloudScene {
    this.canvas.addEventListener?.('webglcontextlost',e=>e.preventDefault(),{once:true});
    this.loseExtension?.loseContext?.();
   }
-  this.measurements.length=0;this.amortized=null;this.presentProgram=null;this.fieldTexture=null;this.buffer=null;this.program=null;
-  this.rejectReady?.(error);this.resolveReady=this.rejectReady=null;
-  this.options.onError?.(error);
+  this.measurements.length=0;this.amortized=this.presentProgram=this.fieldTexture=this.buffer=this.program=null;
  }
  initGpu(){
   const gl=this.gl;if(gl.isContextLost()||this.failed)return;
@@ -1448,9 +1450,9 @@ class CloudScene {
  setOptions(patch={}){
   const previousFps=this.options.fps;
   for(const key of ['interactive','autoStart','powerPreference','failIfMajorPerformanceCaveat'])if(key in patch&&patch[key]!==this.options[key])throw new TypeError('Changing '+key+' requires a new CloudScene.');
-  for(const key of ['onFrame','onStrike','onError','onContextLost','onContextRestored'])if(key in patch&&patch[key]!=null&&typeof patch[key]!=='function')throw new TypeError(key+' must be a function.');
+  for(const key of ['onFrame','onStrike','onError','beforeRender','onContextLost','onContextRestored'])if(key in patch&&patch[key]!=null&&typeof patch[key]!=='function')throw new TypeError(key+' must be a function.');
   for(const key of ['color','cloudColor','background'])if(key in patch&&!(typeof patch[key]==='string'&&/^#[0-9a-f]{6}$/i.test(patch[key])||Array.isArray(patch[key])&&patch[key].length===3&&Array.from(patch[key]).every(Number.isFinite)))throw new TypeError(key+' must be a hex color or RGB vector.');
-  for(const key of ['lightning','transparent','interactive','autoStart'])if(key in patch&&typeof patch[key]!=='boolean')throw new TypeError(key+' must be boolean.');
+  for(const key of ['lightning','transparent','interactive','autoStart','pauseWhenHidden'])if(key in patch&&typeof patch[key]!=='boolean')throw new TypeError(key+' must be boolean.');
   if('densityShader' in patch&&patch.densityShader!==this.options.densityShader)throw new TypeError('A new densityShader requires a new CloudScene.');
   if('quality' in patch&&patch.quality!=='auto'&&!Object.hasOwn(profiles,patch.quality))throw new RangeError('quality must be auto, cpu, low, medium, or high');
   if('preset' in patch&&!Object.hasOwn(CloudPresets,patch.preset))throw new RangeError('Unknown cloud preset.');
@@ -1470,13 +1472,30 @@ class CloudScene {
   }
   if('transparent' in patch)this.options.backgroundOpacity=patch.transparent?0:1;
   if(patch.quality)Object.assign(this.options,profiles[patch.quality==='auto'?this.device.profile:patch.quality]);
-  for(const key of ['quality','color','lightning','lightningMode','shape','cloudColor','background','onFrame','onStrike','onError','onContextLost','onContextRestored','windDirection','lightDirection','offset','scale'])if(key in patch)this.options[key]=Array.isArray(patch[key])?patch[key].slice():patch[key];
+  for(const key of ['quality','color','lightning','lightningMode','shape','cloudColor','background','onFrame','onStrike','onError','beforeRender','onContextLost','onContextRestored','pauseWhenHidden','windDirection','lightDirection','offset','scale'])if(key in patch)this.options[key]=Array.isArray(patch[key])?patch[key].slice():patch[key];
   for(const [key,{min,max}]of Object.entries(ranges))if(key in patch)this.options[key]=clamp(patch[key],min,max);
   if('seed' in patch){this.lightning.configure('seed',patch.seed);this.options.seed=this.lightning.getState().settings.seed;}
   for(const [key,kind]of Object.entries(lightningSettings))if(key in patch)this.lightning.configure(kind,this.options[key]);
   if('lightningMode' in patch)this.lightning.configure('mode',this.options.lightningMode);
   this.options.transparent=this.options.backgroundOpacity===0;
   if(this.options.fps!==previousFps)this.last=null;
+  if('pauseWhenHidden' in patch){
+   if(this.options.pauseWhenHidden){
+    if(!this.visibilityObserver&&globalThis.IntersectionObserver){
+     this.visibilityObserver=new IntersectionObserver(entries=>{
+      const entry=entries.at(-1);if(!entry)return;
+      const next=Boolean(entry.isIntersecting);if(next===this.visible)return;
+      this.visible=next;this.last=null;
+      if(!next)this.cancelSchedule();
+      else if(this.running)this.schedule();
+     });
+     this.visibilityObserver.observe(this.canvas);
+    }
+   }else{
+    this.visibilityObserver?.disconnect();this.visibilityObserver=null;
+    if(!this.visible){this.visible=true;this.last=null;if(this.running)this.schedule();}
+   }
+  }
   if('adaptiveQuality' in patch&&!this.options.adaptiveQuality)this.renderScale=1;
   this.renderScale=Math.max(this.options.minRenderScale,this.renderScale);
   if(this.width&&['adaptiveQuality','minRenderScale','quality','resolutionScale','resolutionLimit','pixelRatio'].some(key=>key in patch))this.resize(this.width,this.height);
@@ -1520,18 +1539,42 @@ class CloudScene {
   const copyColor=s=>({...s,...(Array.isArray(s.color)?{color:s.color.slice()}:{})});
   this.externalLights=lights.slice(0,3).map(copyColor);this.externalSegments=segments.slice(0,32).map(s=>({...copyColor(s),a:{...s.a},b:{...s.b}}));
  }
- setPaused(value){const next=Boolean(value);if(next===this.paused)return;this.paused=next;this.last=null;if(this.paused){cancelAnimationFrame(this.frame);this.frame=0;this.lightning.clear();this.render(this.time,0);}else if(this.running)this.schedule();}
+ reportError(error){
+  if(this.options.onError)this.options.onError(error);
+  else console.error(error);
+ }
+ cancelSchedule(){
+  if(this.sleepTimer){clearTimeout(this.sleepTimer);this.sleepTimer=0;}
+  if(this.frame){cancelAnimationFrame(this.frame);this.frame=0;}
+ }
+ setPaused(value){const next=Boolean(value);if(next===this.paused)return;this.paused=next;this.last=null;if(this.paused){this.cancelSchedule();this.lightning.clear();this.render(this.time,0);}else if(this.running)this.schedule();}
  strike(x=this.pointer.x,y=this.pointer.y){this.setPointer(x,y);this.lightning.trigger();}
- schedule(){if(!this.destroyed&&!this.failed&&this.running&&!this.paused&&!globalThis.document?.hidden&&!this.gl.isContextLost()&&!this.frame)this.frame=requestAnimationFrame(t=>this.tick(t));}
+ schedule(now){
+  if(this.destroyed||this.failed||!this.running||this.paused||!this.visible||globalThis.document?.hidden||this.gl.isContextLost()||this.frame||this.sleepTimer)return;
+  if(now!==undefined&&this.last!==null){
+   const wait=this.nextRender-now;
+   if(wait>24){
+    this.sleepTimer=setTimeout(()=>{
+     this.sleepTimer=0;
+     if(!this.destroyed&&!this.failed&&this.running&&!this.paused&&this.visible&&!globalThis.document?.hidden&&!this.gl.isContextLost()&&!this.frame)this.frame=requestAnimationFrame(t=>this.tick(t));
+    },Math.max(1,Math.floor(wait-4)));
+    return;
+   }
+  }
+  this.frame=requestAnimationFrame(t=>this.tick(t));
+ }
  tick(now){
-  this.frame=0;if(!this.running||this.destroyed||this.failed||this.paused||globalThis.document?.hidden||this.gl.isContextLost())return;
+  this.frame=0;if(!this.running||this.destroyed||this.failed||this.paused||!this.visible||globalThis.document?.hidden||this.gl.isContextLost())return;
   const fresh=this.last===null,interval=1000/this.options.fps;
   if(fresh||now+.0001>=this.nextRender){
    const dt=fresh?interval/1000:Math.min(.5,(now-this.last)/1000);
    this.nextRender=fresh?now+interval:this.nextRender+(Math.floor(Math.max(0,now-this.nextRender)/interval)+1)*interval;
-   this.last=now;this.time+=dt*this.options.drift;this.render(this.time,dt);if(!this.timer)this.pace(now,fresh);
+   this.last=now;this.time+=dt*this.options.drift;
+   if(this.options.beforeRender)try{this.options.beforeRender({time:this.time,dt,width:this.canvas.width,height:this.canvas.height});}catch(error){this.reportError(error);}
+   if(this.destroyed||this.failed||!this.running||this.paused||!this.visible||this.gl.isContextLost())return;
+   this.render(this.time,dt);if(!this.timer)this.pace(now,fresh);
   }
-  this.schedule();
+  this.schedule(now);
  }
  // Automatic resolution without a GPU timer (software WebGL, most phones): the frame cadence. A busy GPU or CPU
  // renderer delays the next animation frame, so frames arriving well after their slot lower the render scale and a
@@ -1549,7 +1592,7 @@ class CloudScene {
   if(Math.abs(scale-this.renderScale)>.01){this.renderScale=scale;this.paceAdjustAt=this.paceSamples;this.resize(this.width,this.height);}
  }
  start(){if(this.destroyed)throw new Error('CloudScene was destroyed.');if(this.failed)return this;this.running=true;this.schedule();return this;}
- stop(){this.running=false;cancelAnimationFrame(this.frame);this.frame=0;this.last=null;return this;}
+ stop(){this.running=false;this.cancelSchedule();this.last=null;return this;}
  getPerformance(){return {gpuTimingAvailable:Boolean(this.timer),gpuMs:this.gpuMs,frameMs:this.frameMs,renderScale:this.renderScale,width:this.canvas.width,height:this.canvas.height,software:this.device.software,profile:this.options.quality==='auto'?this.device.profile:this.options.quality,contextLost:Boolean(this.gl.isContextLost())};}
  pollTiming(){
   if(!this.timer||!this.measurements.length)return;
@@ -1611,7 +1654,8 @@ class CloudScene {
   if(amortized)this.drawBand(amortized,bands);
   else{gl.bindFramebuffer(gl.FRAMEBUFFER,null);gl.drawArrays(gl.TRIANGLES,0,6);}
   if(query){gl.endQuery(this.timer.TIME_ELAPSED_EXT);this.measurements.push(query);}
-  this.options.onFrame?.({time,width:this.canvas.width,height:this.canvas.height,lightning:this.lightning.getState()});return true;
+  if(this.options.onFrame)try{this.options.onFrame({time,width:this.canvas.width,height:this.canvas.height,lightning:this.lightning.getState()});}catch(error){this.reportError(error);}
+  return true;
  }
  // Three canvas-sized targets: the previous and next finished cloud frames, and the one being drawn.
  amortizedTargets(bands){
@@ -1675,19 +1719,7 @@ class CloudScene {
   this.amortized=null;
  }
  destroy(){
-  if(this.destroyed)return;this.stop();this.destroyed=true;this.events.abort();this.observer?.disconnect();this.lightning.clear();
-  this.cancelCompile('compileJob',true);this.cancelCompile('presentJob',true);
-  if(!this.gl.isContextLost()){
-   for(const query of this.measurements)this.gl.deleteQuery(query);
-   this.releaseAmortized();
-   if(this.presentProgram)this.gl.deleteProgram(this.presentProgram);
-   if(this.fieldTexture)this.gl.deleteTexture(this.fieldTexture);
-   if(this.buffer)this.gl.deleteBuffer(this.buffer);
-   if(this.program)this.gl.deleteProgram(this.program);
-   this.canvas.addEventListener?.('webglcontextlost',e=>e.preventDefault(),{once:true});
-   this.loseExtension?.loseContext?.();
-  }
-  this.measurements.length=0;this.amortized=null;this.presentProgram=null;this.fieldTexture=null;this.buffer=null;this.program=null;
+  if(this.destroyed)return;this.stop();this.destroyed=true;this.events.abort();this.releaseGpu();
  }
 }
 CloudScene.createFragmentShader=customFragment;
