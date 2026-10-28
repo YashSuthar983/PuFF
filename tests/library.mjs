@@ -179,6 +179,33 @@ actor.clear();assert.equal(actor.getLights().length,0);
  failShader=true;
  assert.throws(()=>new CloudScene({...canvas,getContext:()=>syncGl},{autoStart:false,densityShader:'return broken;'}));
  failShader=false;
+
+ // Shader specialization, per-context caching, and async recompile on bound increases.
+ let compiledSources=[];
+ const variantGl=new Proxy(gl,{get(target,key){
+  if(key==='getExtension')return name=>name==='KHR_parallel_shader_compile'?khrExt:null;
+  if(key==='shaderSource')return(s,src)=>{if(src.includes('PUFF_MAX_STEPS'))compiledSources.push(src);};
+  if(key==='getProgramParameter')return(prog,pname)=>pname===0x91B1?completed:true;
+  return target[key];
+ }});
+ completed=true;
+ const vScene=new CloudScene({...canvas,getContext:()=>variantGl},{autoStart:false,interactive:false,quality:'low',raySteps:15,lightning:false});
+ assert.equal(compiledSources.length,1);
+ assert(compiledSources[0].includes('#define PUFF_MAX_STEPS 16')&&compiledSources[0].includes('#define PUFF_BOLTS 0'),'Initial compile specializes PUFF_MAX_STEPS=16 and PUFF_BOLTS=0');
+ vScene.setOptions({raySteps:12});
+ assert.equal(compiledSources.length,1,'Lowering raySteps within the compiled bucket reuses the active program');
+ // Raising raySteps above 16 starts an async recompile while keeping the old program active and clamping uSteps.
+ completed=false;
+ vScene.setOptions({raySteps:40});
+ assert.equal(compiledSources.length,2,'Raising raySteps above the bucket starts a new compile');
+ assert(compiledSources[1].includes('#define PUFF_MAX_STEPS 48'),'40 raySteps rounds up to bucket 48');
+ assert(vScene.render(0,0),'Scene continues rendering with the previous program while recompiling');
+ assert.equal(uniforms.uSteps[0],16,'uSteps is clamped to the active compiled bucket until the new program links');
+ completed=true;
+ for(const fn of [...frames.values()]){frames.clear();fn(48);}
+ vScene.render(0,0);
+ assert.equal(uniforms.uSteps[0],40,'Once the new program links, full raySteps is used');
+ vScene.destroy();
 }
 
 

@@ -12,6 +12,10 @@ try{
  if(compile.status!==0){skip('C compiler or EGL/GLES development libraries unavailable.');}
  else{
   const pairs=[['mask',CloudVolume.vertexShader,CloudVolume.fragmentShader],['scene',CloudScene.vertexShader,CloudScene.fragmentShader],['scene-present',CloudScene.vertexShader,CloudScene.presentFragmentShader],['custom',CloudScene.vertexShader,CloudScene.createFragmentShader('return cloudBase(p)*uAmount;',{uAmount:.8})]];
+  for(const maxSteps of [8,16,24,32,48,64,96])for(const bolts of [0,32]){
+   pairs.push([`scene-${maxSteps}-${bolts}`,CloudScene.vertexShader,CloudScene.createFragmentShader(null,{},{maxSteps,bolts})]);
+  }
+  pairs.push(['custom-specialized',CloudScene.vertexShader,CloudScene.createFragmentShader('return cloudBase(p)*uAmount;',{uAmount:.8},{maxSteps:16,bolts:0})]);
   const args=[];for(const [name,vertex,fragment]of pairs)for(const [ext,source]of [['vert',vertex],['frag',fragment]]){const path=join(dir,name+'.'+ext);writeFileSync(path,source);args.push(path);}
   const result=spawnSync(binary,args,{encoding:'utf8',env:{...process.env,LIBGL_ALWAYS_SOFTWARE:'1'}});
   if(result.status===77)skip('Surfaceless ES3 context unavailable.');

@@ -47,7 +47,7 @@ export const CloudPresets:Readonly<Record<CloudPreset,Readonly<CloudSceneOptions
 export function createDensityField(sample:(x:number,y:number,z:number)=>number,dimensions?:{width?:number;height?:number;depth?:number}):DensityField;
 export class CloudScene {
  static vertexShader:string;static fragmentShader:string;
- static createFragmentShader(body?:string,uniforms?:Record<string,number|number[]>):string;
+ static createFragmentShader(body?:string,uniforms?:Record<string,number|number[]>,defines?:{maxSteps?:number;bolts?:number}):string;
  constructor(canvas:HTMLCanvasElement,options?:CloudSceneOptions);
  readonly canvas:HTMLCanvasElement; readonly gl:WebGL2RenderingContext; readonly ready:Promise<this>;
  options:CloudSceneOptions; paused:boolean; time:number;
